@@ -9,7 +9,7 @@ use zbus::proxy;
 
 #[derive(Parser)]
 #[command(name = "kde-fan-control")]
-#[command(about = "Inspect discovered fan-control hardware")]
+#[command(about = "Inspect and manage fan-control hardware and lifecycle")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -36,6 +36,39 @@ enum Command {
         #[arg(long, default_value_t = false)]
         fan: bool,
     },
+    /// Show the current draft configuration.
+    Draft,
+    /// Show the current applied configuration.
+    Applied,
+    /// Show the current degraded-state summary.
+    Degraded,
+    /// Show recent lifecycle events.
+    Events,
+    /// Stage a fan enrollment change in the draft configuration.
+    Enroll {
+        /// Stable fan ID to enroll.
+        fan_id: String,
+        /// Whether the fan should be managed by the daemon.
+        #[arg(long, default_value_t = true)]
+        managed: bool,
+        /// Control mode for the fan (pwm, voltage, or empty for none).
+        #[arg(long, default_value = "none")]
+        control_mode: String,
+        /// Temperature source IDs for this fan's control loop.
+        #[arg(long, num_args = 0.., value_delimiter = ',')]
+        temp_sources: Vec<String>,
+    },
+    /// Remove a fan from the draft configuration.
+    Unenroll {
+        /// Stable fan ID to remove from the draft.
+        fan_id: String,
+    },
+    /// Discard the entire draft configuration.
+    Discard,
+    /// Validate the current draft without applying it.
+    Validate,
+    /// Apply the current draft configuration.
+    Apply,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -55,6 +88,29 @@ trait InventoryProxy {
     fn set_fan_name(&self, id: &str, name: &str) -> zbus::Result<()>;
     fn remove_sensor_name(&self, id: &str) -> zbus::Result<()>;
     fn remove_fan_name(&self, id: &str) -> zbus::Result<()>;
+}
+
+#[proxy(
+    interface = "org.kde.FanControl.Lifecycle",
+    default_path = "/org/kde/FanControl/Lifecycle",
+    default_service = "org.kde.FanControl"
+)]
+trait LifecycleProxy {
+    fn get_draft_config(&self) -> zbus::Result<String>;
+    fn get_applied_config(&self) -> zbus::Result<String>;
+    fn get_degraded_summary(&self) -> zbus::Result<String>;
+    fn get_lifecycle_events(&self) -> zbus::Result<String>;
+    fn set_draft_fan_enrollment(
+        &self,
+        fan_id: &str,
+        managed: bool,
+        control_mode: &str,
+        temp_sources: &[&str],
+    ) -> zbus::Result<String>;
+    fn remove_draft_fan(&self, fan_id: &str) -> zbus::Result<()>;
+    fn discard_draft(&self) -> zbus::Result<()>;
+    fn validate_draft(&self) -> zbus::Result<String>;
+    fn apply_draft(&self) -> zbus::Result<String>;
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -88,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Rename { id, name, fan } => {
             run_async(async {
-                let proxy = connect_proxy().await?;
+                let proxy = connect_inventory_proxy().await?;
                 if fan {
                     proxy.set_fan_name(&id, &name).await?;
                 } else {
@@ -100,7 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Unname { id, fan } => {
             run_async(async {
-                let proxy = connect_proxy().await?;
+                let proxy = connect_inventory_proxy().await?;
                 if fan {
                     proxy.remove_fan_name(&id).await?;
                 } else {
@@ -109,6 +165,83 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(())
             })?;
             println!("removed name for {}", id);
+        }
+        Command::Draft => {
+            let json = run_async(async {
+                let proxy = connect_lifecycle_proxy().await?;
+                Ok(proxy.get_draft_config().await?)
+            })?;
+            print_json_or_text(&json, "No draft configuration.");
+        }
+        Command::Applied => {
+            let json = run_async(async {
+                let proxy = connect_lifecycle_proxy().await?;
+                Ok(proxy.get_applied_config().await?)
+            })?;
+            print_json_or_text(&json, "No applied configuration.");
+        }
+        Command::Degraded => {
+            let json = run_async(async {
+                let proxy = connect_lifecycle_proxy().await?;
+                Ok(proxy.get_degraded_summary().await?)
+            })?;
+            print_json_or_text(&json, "No degraded fans.");
+        }
+        Command::Events => {
+            let json = run_async(async {
+                let proxy = connect_lifecycle_proxy().await?;
+                Ok(proxy.get_lifecycle_events().await?)
+            })?;
+            print_json_or_text(&json, "No lifecycle events recorded.");
+        }
+        Command::Enroll {
+            fan_id,
+            managed,
+            control_mode,
+            temp_sources,
+        } => {
+            let temp_slices: Vec<&str> = temp_sources.iter().map(|s| s.as_str()).collect();
+            let result = run_async(async {
+                let proxy = connect_lifecycle_proxy().await?;
+                Ok(proxy
+                    .set_draft_fan_enrollment(&fan_id, managed, &control_mode, &temp_slices)
+                    .await?)
+            })?;
+            println!("Draft updated. Current draft configuration:");
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::from_str::<serde_json::Value>(&result)?)?
+            );
+        }
+        Command::Unenroll { fan_id } => {
+            run_async(async {
+                let proxy = connect_lifecycle_proxy().await?;
+                proxy.remove_draft_fan(&fan_id).await?;
+                Ok(())
+            })?;
+            println!("Removed {} from draft configuration.", fan_id);
+        }
+        Command::Discard => {
+            run_async(async {
+                let proxy = connect_lifecycle_proxy().await?;
+                proxy.discard_draft().await?;
+                Ok(())
+            })?;
+            println!("Draft configuration discarded.");
+        }
+        Command::Validate => {
+            let json = run_async(async {
+                let proxy = connect_lifecycle_proxy().await?;
+                Ok(proxy.validate_draft().await?)
+            })?;
+            print_validation_result(&json)?;
+        }
+        Command::Apply => {
+            let json = run_async(async {
+                let proxy = connect_lifecycle_proxy().await?;
+                Ok(proxy.apply_draft().await?)
+            })?;
+            print_validation_result(&json)?;
         }
     }
 
@@ -123,12 +256,21 @@ where
     Ok(rt.block_on(future)?)
 }
 
-async fn connect_proxy() -> zbus::Result<InventoryProxyProxy<'static>> {
-    let connection = match zbus::connection::Builder::session()?.build().await {
-        Ok(c) => c,
-        Err(_) => zbus::connection::Builder::system()?.build().await?,
-    };
+async fn connect_inventory_proxy() -> zbus::Result<InventoryProxyProxy<'static>> {
+    let connection = connect_dbus().await?;
     InventoryProxyProxy::new(&connection).await
+}
+
+async fn connect_lifecycle_proxy() -> zbus::Result<LifecycleProxyProxy<'static>> {
+    let connection = connect_dbus().await?;
+    LifecycleProxyProxy::new(&connection).await
+}
+
+async fn connect_dbus() -> zbus::Result<zbus::Connection> {
+    match zbus::connection::Builder::session()?.build().await {
+        Ok(c) => Ok(c),
+        Err(_) => zbus::connection::Builder::system()?.build().await,
+    }
 }
 
 fn fetch_direct(root: &Option<PathBuf>) -> Result<InventorySnapshot, Box<dyn std::error::Error>> {
@@ -141,7 +283,7 @@ fn fetch_direct(root: &Option<PathBuf>) -> Result<InventorySnapshot, Box<dyn std
 fn fetch_dbus_snapshot() -> Result<InventorySnapshot, Box<dyn std::error::Error>> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let proxy = connect_proxy().await?;
+        let proxy = connect_inventory_proxy().await?;
         let json_str = tokio::time::timeout(Duration::from_secs(5), proxy.snapshot())
             .await
             .map_err(|_| -> zbus::Error {
@@ -150,6 +292,69 @@ fn fetch_dbus_snapshot() -> Result<InventorySnapshot, Box<dyn std::error::Error>
         let snapshot: InventorySnapshot = serde_json::from_str(&json_str)?;
         Ok(snapshot)
     })
+}
+
+/// Print a JSON string from the daemon, with a fallback message if it's
+/// empty or null. Handles access-denied errors with a user-actionable message.
+fn print_json_or_text(json: &str, empty_message: &str) {
+    if json == "null" {
+        println!("{}", empty_message);
+        return;
+    }
+    match serde_json::from_str::<serde_json::Value>(json) {
+        Ok(value) => println!(
+            "{}",
+            serde_json::to_string_pretty(&value).unwrap_or(json.to_string())
+        ),
+        Err(_) => println!("{}", json),
+    }
+}
+
+/// Print a validation result from the daemon, showing which fans were
+/// enrollable and which were rejected with reasons.
+fn print_validation_result(json: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let value: serde_json::Value = serde_json::from_str(json)?;
+    let enrollable = value
+        .get("enrollable")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let rejected = value
+        .get("rejected")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    if enrollable.is_empty() && rejected.is_empty() {
+        println!("Draft is empty — nothing to validate.");
+        return Ok(());
+    }
+
+    if !enrollable.is_empty() {
+        println!("Enrollable fans:");
+        for fan_id in enrollable {
+            println!("  ✓ {}", fan_id);
+        }
+    }
+
+    if !rejected.is_empty() {
+        println!("Rejected fans:");
+        for rejection in rejected {
+            let fan_id = rejection
+                .get("0")
+                .or_else(|| rejection.get("fan_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let reason = rejection
+                .get("1")
+                .or_else(|| rejection.get("reason"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown reason");
+            println!("  ✗ {}: {}", fan_id, reason);
+        }
+    }
+
+    Ok(())
 }
 
 fn print_text(snapshot: &InventorySnapshot) {
