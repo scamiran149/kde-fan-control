@@ -16,6 +16,7 @@ use crate::config::{
     AppliedConfig, AppliedFanEntry, DegradedReason, DegradedState, FallbackFailure,
     FallbackIncident, LifecycleEvent, LifecycleEventLog,
 };
+use crate::control::{ActuatorPolicy, AggregationFn, ControlCadence, PidGains, PidLimits};
 use crate::inventory::{ControlMode, FanChannel, InventorySnapshot, SupportState};
 
 // ---------------------------------------------------------------------------
@@ -181,6 +182,13 @@ pub fn reconcile_applied_config(
             AppliedFanEntry {
                 control_mode: applied_entry.control_mode,
                 temp_sources: applied_entry.temp_sources.clone(),
+                target_temp_millidegrees: applied_entry.target_temp_millidegrees,
+                aggregation: applied_entry.aggregation,
+                pid_gains: applied_entry.pid_gains,
+                cadence: applied_entry.cadence,
+                deadband_millidegrees: applied_entry.deadband_millidegrees,
+                actuator_policy: applied_entry.actuator_policy,
+                pid_limits: applied_entry.pid_limits,
             },
         );
         restored.push(outcome);
@@ -830,14 +838,25 @@ mod tests {
                 let mut m = HashMap::new();
                 m.insert(
                     "hwmon-test-0000000000000001-fan1".to_string(),
-                    AppliedFanEntry {
-                        control_mode: ControlMode::Pwm,
-                        temp_sources: vec!["hwmon-test-0000000000000001-temp1".to_string()],
-                    },
+                    applied_fan_entry(vec!["hwmon-test-0000000000000001-temp1".to_string()]),
                 );
                 m
             },
             applied_at: Some("2026-04-11T12:00:00Z".to_string()),
+        }
+    }
+
+    fn applied_fan_entry(temp_sources: Vec<String>) -> AppliedFanEntry {
+        AppliedFanEntry {
+            control_mode: ControlMode::Pwm,
+            temp_sources,
+            target_temp_millidegrees: 65_000,
+            aggregation: AggregationFn::Average,
+            pid_gains: PidGains::default(),
+            cadence: ControlCadence::default(),
+            deadband_millidegrees: 1_000,
+            actuator_policy: ActuatorPolicy::default(),
+            pid_limits: PidLimits::default(),
         }
     }
 
@@ -871,12 +890,10 @@ mod tests {
         }
 
         // Reconciled config should contain the fan.
-        assert!(
-            result
-                .reconciled_config
-                .fans
-                .contains_key("hwmon-test-0000000000000001-fan1")
-        );
+        assert!(result
+            .reconciled_config
+            .fans
+            .contains_key("hwmon-test-0000000000000001-fan1"));
     }
 
     #[test]
@@ -1011,17 +1028,11 @@ mod tests {
                 let mut m = HashMap::new();
                 m.insert(
                     "hwmon-test-0000000000000001-fan1".to_string(),
-                    AppliedFanEntry {
-                        control_mode: ControlMode::Pwm,
-                        temp_sources: vec!["hwmon-test-0000000000000001-temp1".to_string()],
-                    },
+                    applied_fan_entry(vec!["hwmon-test-0000000000000001-temp1".to_string()]),
                 );
                 m.insert(
                     "hwmon-ghost-0000000000000003-fan1".to_string(),
-                    AppliedFanEntry {
-                        control_mode: ControlMode::Pwm,
-                        temp_sources: vec![],
-                    },
+                    applied_fan_entry(vec![]),
                 );
                 m
             },
@@ -1035,18 +1046,14 @@ mod tests {
         assert_eq!(result.degraded_reasons.len(), 1);
 
         // Reconciled config should only have the real fan.
-        assert!(
-            result
-                .reconciled_config
-                .fans
-                .contains_key("hwmon-test-0000000000000001-fan1")
-        );
-        assert!(
-            !result
-                .reconciled_config
-                .fans
-                .contains_key("hwmon-ghost-0000000000000003-fan1")
-        );
+        assert!(result
+            .reconciled_config
+            .fans
+            .contains_key("hwmon-test-0000000000000001-fan1"));
+        assert!(!result
+            .reconciled_config
+            .fans
+            .contains_key("hwmon-ghost-0000000000000003-fan1"));
     }
 
     // --- Ownership tests ---
@@ -1220,11 +1227,9 @@ mod tests {
             }
             _ => panic!("expected Managed status for fan1"),
         }
-        assert!(
-            state
-                .owned_fans
-                .contains(&"hwmon-test-0000000000000001-fan1".to_string())
-        );
+        assert!(state
+            .owned_fans
+            .contains(&"hwmon-test-0000000000000001-fan1".to_string()));
     }
 
     #[test]
@@ -1323,12 +1328,10 @@ mod tests {
             incident.affected_fans,
             vec!["hwmon-test-0000000000000001-fan1"]
         );
-        assert!(
-            !incident
-                .affected_fans
-                .iter()
-                .any(|fan| fan == "fan-unmanaged")
-        );
+        assert!(!incident
+            .affected_fans
+            .iter()
+            .any(|fan| fan == "fan-unmanaged"));
     }
 
     #[test]

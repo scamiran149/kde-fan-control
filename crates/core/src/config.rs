@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::control::{ActuatorPolicy, AggregationFn, ControlCadence, PidGains, PidLimits};
 use crate::inventory::{ControlMode, FanChannel, InventorySnapshot, SupportState};
 
 /// Current schema version for the daemon-owned configuration file.
@@ -82,7 +83,7 @@ pub struct DraftConfig {
 }
 
 /// A single fan's draft enrollment state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DraftFanEntry {
     /// Whether the daemon should manage this fan when the draft is applied.
     pub managed: bool,
@@ -96,6 +97,27 @@ pub struct DraftFanEntry {
     /// control loop. Not validated until apply time against current inventory.
     #[serde(default)]
     pub temp_sources: Vec<String>,
+
+    #[serde(default)]
+    pub target_temp_millidegrees: Option<i64>,
+
+    #[serde(default)]
+    pub aggregation: Option<AggregationFn>,
+
+    #[serde(default)]
+    pub pid_gains: Option<PidGains>,
+
+    #[serde(default)]
+    pub cadence: Option<ControlCadence>,
+
+    #[serde(default)]
+    pub deadband_millidegrees: Option<i64>,
+
+    #[serde(default)]
+    pub actuator_policy: Option<ActuatorPolicy>,
+
+    #[serde(default)]
+    pub pid_limits: Option<PidLimits>,
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +146,50 @@ pub struct AppliedFanEntry {
     /// Temperature source IDs used as input for this fan's control loop.
     #[serde(default)]
     pub temp_sources: Vec<String>,
+
+    pub target_temp_millidegrees: i64,
+
+    pub aggregation: AggregationFn,
+
+    pub pid_gains: PidGains,
+
+    pub cadence: ControlCadence,
+
+    pub deadband_millidegrees: i64,
+
+    pub actuator_policy: ActuatorPolicy,
+
+    pub pid_limits: PidLimits,
+}
+
+impl DraftFanEntry {
+    pub fn resolved_target_temp_millidegrees(&self) -> Option<i64> {
+        self.target_temp_millidegrees
+    }
+
+    pub fn resolved_aggregation(&self) -> AggregationFn {
+        self.aggregation.unwrap_or_default()
+    }
+
+    pub fn resolved_pid_gains(&self) -> PidGains {
+        self.pid_gains.unwrap_or_default()
+    }
+
+    pub fn resolved_cadence(&self) -> ControlCadence {
+        self.cadence.unwrap_or_default()
+    }
+
+    pub fn resolved_deadband_millidegrees(&self) -> i64 {
+        self.deadband_millidegrees.unwrap_or(1_000)
+    }
+
+    pub fn resolved_actuator_policy(&self) -> ActuatorPolicy {
+        self.actuator_policy.unwrap_or_default()
+    }
+
+    pub fn resolved_pid_limits(&self) -> PidLimits {
+        self.pid_limits.unwrap_or_default()
+    }
 }
 
 /// A single fan whose fallback write failed.
@@ -315,6 +381,21 @@ pub enum ValidationError {
 
     /// A referenced temperature source ID does not exist in current inventory.
     TempSourceNotFound { fan_id: String, temp_id: String },
+
+    /// A managed fan entry did not specify a target temperature.
+    MissingTargetTemp { fan_id: String },
+
+    /// A managed fan entry did not specify any temperature sources.
+    NoSensorForManagedFan { fan_id: String },
+
+    /// A managed fan specified invalid cadence bounds.
+    InvalidCadence { fan_id: String, reason: String },
+
+    /// A managed fan specified invalid actuator limits.
+    InvalidActuatorPolicy { fan_id: String, reason: String },
+
+    /// A managed fan specified invalid PID clamp limits.
+    InvalidPidLimits { fan_id: String, reason: String },
 }
 
 impl std::fmt::Display for ValidationError {
@@ -355,8 +436,103 @@ impl std::fmt::Display for ValidationError {
                     "temperature source '{temp_id}' for fan '{fan_id}' not found in current inventory"
                 )
             }
+            Self::MissingTargetTemp { fan_id } => {
+                write!(
+                    f,
+                    "managed fan '{fan_id}' has no target temperature configured"
+                )
+            }
+            Self::NoSensorForManagedFan { fan_id } => {
+                write!(
+                    f,
+                    "managed fan '{fan_id}' has no temperature source configured"
+                )
+            }
+            Self::InvalidCadence { fan_id, reason } => {
+                write!(f, "managed fan '{fan_id}' has invalid cadence: {reason}")
+            }
+            Self::InvalidActuatorPolicy { fan_id, reason } => {
+                write!(
+                    f,
+                    "managed fan '{fan_id}' has invalid actuator policy: {reason}"
+                )
+            }
+            Self::InvalidPidLimits { fan_id, reason } => {
+                write!(f, "managed fan '{fan_id}' has invalid PID limits: {reason}")
+            }
         }
     }
+}
+
+fn validate_cadence(fan_id: &str, cadence: ControlCadence) -> Result<(), ValidationError> {
+    if cadence.sample_interval_ms < 250
+        || cadence.control_interval_ms < 250
+        || cadence.write_interval_ms < 250
+    {
+        return Err(ValidationError::InvalidCadence {
+            fan_id: fan_id.to_string(),
+            reason: "sample, control, and write cadences must each be at least 250ms".to_string(),
+        });
+    }
+
+    if cadence.sample_interval_ms > cadence.control_interval_ms
+        || cadence.control_interval_ms > cadence.write_interval_ms
+    {
+        return Err(ValidationError::InvalidCadence {
+            fan_id: fan_id.to_string(),
+            reason: "cadence must satisfy sample <= control <= write".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_actuator_policy(fan_id: &str, policy: ActuatorPolicy) -> Result<(), ValidationError> {
+    let percent_ok = |value: f64| (0.0..=100.0).contains(&value);
+
+    if !percent_ok(policy.output_min_percent)
+        || !percent_ok(policy.output_max_percent)
+        || !percent_ok(policy.startup_kick_percent)
+    {
+        return Err(ValidationError::InvalidActuatorPolicy {
+            fan_id: fan_id.to_string(),
+            reason: "all actuator percentages must be within 0.0..=100.0".to_string(),
+        });
+    }
+
+    if policy.output_min_percent > policy.output_max_percent {
+        return Err(ValidationError::InvalidActuatorPolicy {
+            fan_id: fan_id.to_string(),
+            reason: "output_min_percent must be <= output_max_percent".to_string(),
+        });
+    }
+
+    if policy.pwm_min > policy.pwm_max {
+        return Err(ValidationError::InvalidActuatorPolicy {
+            fan_id: fan_id.to_string(),
+            reason: "pwm_min must be <= pwm_max".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_pid_limits(fan_id: &str, limits: PidLimits) -> Result<(), ValidationError> {
+    if limits.integral_min > limits.integral_max {
+        return Err(ValidationError::InvalidPidLimits {
+            fan_id: fan_id.to_string(),
+            reason: "integral_min must be <= integral_max".to_string(),
+        });
+    }
+
+    if limits.derivative_min > limits.derivative_max {
+        return Err(ValidationError::InvalidPidLimits {
+            fan_id: fan_id.to_string(),
+            reason: "derivative_min must be <= derivative_max".to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 impl std::error::Error for ValidationError {}
@@ -465,7 +641,44 @@ pub fn validate_draft(draft: &DraftConfig, snapshot: &InventorySnapshot) -> Vali
             continue;
         }
 
-        // 4. All temperature sources must exist.
+        // 4. Managed fan must specify a target temperature.
+        if entry.resolved_target_temp_millidegrees().is_none() {
+            rejected.push((
+                fan_id.clone(),
+                ValidationError::MissingTargetTemp {
+                    fan_id: fan_id.clone(),
+                },
+            ));
+            continue;
+        }
+
+        // 5. Managed fan must have at least one sensor source.
+        if entry.temp_sources.is_empty() {
+            rejected.push((
+                fan_id.clone(),
+                ValidationError::NoSensorForManagedFan {
+                    fan_id: fan_id.clone(),
+                },
+            ));
+            continue;
+        }
+
+        if let Err(error) = validate_cadence(fan_id, entry.resolved_cadence()) {
+            rejected.push((fan_id.clone(), error));
+            continue;
+        }
+
+        if let Err(error) = validate_actuator_policy(fan_id, entry.resolved_actuator_policy()) {
+            rejected.push((fan_id.clone(), error));
+            continue;
+        }
+
+        if let Err(error) = validate_pid_limits(fan_id, entry.resolved_pid_limits()) {
+            rejected.push((fan_id.clone(), error));
+            continue;
+        }
+
+        // 6. All temperature sources must exist.
         let mut temp_ok = true;
         for temp_id in &entry.temp_sources {
             if !temp_source_exists(snapshot, temp_id) {
@@ -518,6 +731,13 @@ pub fn apply_draft(
                 AppliedFanEntry {
                     control_mode,
                     temp_sources: entry.temp_sources.clone(),
+                    target_temp_millidegrees: entry.resolved_target_temp_millidegrees()?,
+                    aggregation: entry.resolved_aggregation(),
+                    pid_gains: entry.resolved_pid_gains(),
+                    cadence: entry.resolved_cadence(),
+                    deadband_millidegrees: entry.resolved_deadband_millidegrees(),
+                    actuator_policy: entry.resolved_actuator_policy(),
+                    pid_limits: entry.resolved_pid_limits(),
                 },
             ))
         })
@@ -735,7 +955,23 @@ impl DegradedState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::control::{ActuatorPolicy, AggregationFn, ControlCadence, PidGains, PidLimits};
     use crate::inventory::{HwmonDevice, TemperatureSensor};
+
+    fn managed_draft_entry() -> DraftFanEntry {
+        DraftFanEntry {
+            managed: true,
+            control_mode: Some(ControlMode::Pwm),
+            temp_sources: vec!["hwmon-test-0000000000000001-temp1".to_string()],
+            target_temp_millidegrees: Some(65_000),
+            aggregation: None,
+            pid_gains: None,
+            cadence: None,
+            deadband_millidegrees: None,
+            actuator_policy: None,
+            pid_limits: None,
+        }
+    }
 
     /// Build a minimal inventory snapshot with one available fan and one sensor.
     fn test_snapshot() -> InventorySnapshot {
@@ -784,23 +1020,14 @@ mod tests {
     #[test]
     fn round_trip_with_managed_fan() {
         let mut config = AppConfig::default();
-        config.set_draft_fan(
-            "hwmon-test-0000000000000001-fan1",
-            DraftFanEntry {
-                managed: true,
-                control_mode: Some(ControlMode::Pwm),
-                temp_sources: vec!["hwmon-test-0000000000000001-temp1".to_string()],
-            },
-        );
+        config.set_draft_fan("hwmon-test-0000000000000001-fan1", managed_draft_entry());
 
         let serialized = toml::to_string_pretty(&config).unwrap();
         let deserialized: AppConfig = toml::from_str(&serialized).unwrap();
 
-        assert!(
-            deserialized
-                .draft_fan("hwmon-test-0000000000000001-fan1")
-                .is_some()
-        );
+        assert!(deserialized
+            .draft_fan("hwmon-test-0000000000000001-fan1")
+            .is_some());
         let entry = deserialized
             .draft_fan("hwmon-test-0000000000000001-fan1")
             .unwrap();
@@ -819,6 +1046,13 @@ mod tests {
                     AppliedFanEntry {
                         control_mode: ControlMode::Pwm,
                         temp_sources: vec!["hwmon-test-0000000000000001-temp1".to_string()],
+                        target_temp_millidegrees: 65_000,
+                        aggregation: AggregationFn::Average,
+                        pid_gains: PidGains::default(),
+                        cadence: ControlCadence::default(),
+                        deadband_millidegrees: 1_000,
+                        actuator_policy: ActuatorPolicy::default(),
+                        pid_limits: PidLimits::default(),
                     },
                 );
                 m
@@ -874,20 +1108,14 @@ mod tests {
         let mut draft = DraftConfig::default();
         draft.fans.insert(
             "hwmon-test-0000000000000001-fan1".to_string(),
-            DraftFanEntry {
-                managed: true,
-                control_mode: Some(ControlMode::Pwm),
-                temp_sources: vec!["hwmon-test-0000000000000001-temp1".to_string()],
-            },
+            managed_draft_entry(),
         );
 
         let result = validate_draft(&draft, &snapshot);
         assert!(result.all_passed());
-        assert!(
-            result
-                .enrollable
-                .contains(&"hwmon-test-0000000000000001-fan1".to_string())
-        );
+        assert!(result
+            .enrollable
+            .contains(&"hwmon-test-0000000000000001-fan1".to_string()));
         assert!(result.rejected.is_empty());
     }
 
@@ -898,9 +1126,9 @@ mod tests {
         draft.fans.insert(
             "hwmon-test-0000000000000001-fan1".to_string(),
             DraftFanEntry {
-                managed: true,
-                control_mode: Some(ControlMode::Voltage), // not in fan's control_modes
-                temp_sources: vec![],
+                control_mode: Some(ControlMode::Voltage),
+                temp_sources: vec!["hwmon-test-0000000000000001-temp1".to_string()],
+                ..managed_draft_entry()
             },
         );
 
@@ -916,14 +1144,9 @@ mod tests {
     fn validation_rejects_stale_fan_id() {
         let snapshot = test_snapshot();
         let mut draft = DraftConfig::default();
-        draft.fans.insert(
-            "hwmon-nonexistent-fan99".to_string(),
-            DraftFanEntry {
-                managed: true,
-                control_mode: Some(ControlMode::Pwm),
-                temp_sources: vec![],
-            },
-        );
+        draft
+            .fans
+            .insert("hwmon-nonexistent-fan99".to_string(), managed_draft_entry());
 
         let result = validate_draft(&draft, &snapshot);
         assert!(!result.all_passed());
@@ -944,11 +1167,7 @@ mod tests {
         let mut draft = DraftConfig::default();
         draft.fans.insert(
             "hwmon-test-0000000000000001-fan1".to_string(),
-            DraftFanEntry {
-                managed: true,
-                control_mode: Some(ControlMode::Pwm),
-                temp_sources: vec![],
-            },
+            managed_draft_entry(),
         );
 
         let result = validate_draft(&draft, &snapshot);
@@ -966,9 +1185,8 @@ mod tests {
         draft.fans.insert(
             "hwmon-test-0000000000000001-fan1".to_string(),
             DraftFanEntry {
-                managed: true,
-                control_mode: Some(ControlMode::Pwm),
                 temp_sources: vec!["nonexistent-temp".to_string()],
+                ..managed_draft_entry()
             },
         );
 
@@ -986,11 +1204,7 @@ mod tests {
         let mut draft = DraftConfig::default();
         draft.fans.insert(
             "hwmon-test-0000000000000001-fan1".to_string(),
-            DraftFanEntry {
-                managed: false,
-                control_mode: None,
-                temp_sources: vec![],
-            },
+            DraftFanEntry::default(),
         );
 
         let result = validate_draft(&draft, &snapshot);
@@ -1007,33 +1221,126 @@ mod tests {
         // Valid entry.
         draft.fans.insert(
             "hwmon-test-0000000000000001-fan1".to_string(),
-            DraftFanEntry {
-                managed: true,
-                control_mode: Some(ControlMode::Pwm),
-                temp_sources: vec!["hwmon-test-0000000000000001-temp1".to_string()],
-            },
+            managed_draft_entry(),
         );
 
         // Invalid entry — nonexistent fan.
-        draft.fans.insert(
-            "ghost-fan".to_string(),
-            DraftFanEntry {
-                managed: true,
-                control_mode: Some(ControlMode::Pwm),
-                temp_sources: vec![],
-            },
-        );
+        draft
+            .fans
+            .insert("ghost-fan".to_string(), managed_draft_entry());
 
         let (applied, result) = apply_draft(&draft, &snapshot, "2026-04-11T12:00:00Z".to_string());
 
         // Only the valid fan should appear in applied.
-        assert!(
-            applied
-                .fans
-                .contains_key("hwmon-test-0000000000000001-fan1")
-        );
+        assert!(applied
+            .fans
+            .contains_key("hwmon-test-0000000000000001-fan1"));
         assert!(!applied.fans.contains_key("ghost-fan"));
         assert_eq!(result.rejected.len(), 1);
+    }
+
+    #[test]
+    fn validation_rejects_missing_target_temperature() {
+        let snapshot = test_snapshot();
+        let mut draft = DraftConfig::default();
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            DraftFanEntry {
+                target_temp_millidegrees: None,
+                ..managed_draft_entry()
+            },
+        );
+
+        let result = validate_draft(&draft, &snapshot);
+        assert!(matches!(
+            &result.rejected[0].1,
+            ValidationError::MissingTargetTemp { .. }
+        ));
+    }
+
+    #[test]
+    fn validation_rejects_managed_fan_without_sensor_sources() {
+        let snapshot = test_snapshot();
+        let mut draft = DraftConfig::default();
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            DraftFanEntry {
+                temp_sources: vec![],
+                ..managed_draft_entry()
+            },
+        );
+
+        let result = validate_draft(&draft, &snapshot);
+        assert!(matches!(
+            &result.rejected[0].1,
+            ValidationError::NoSensorForManagedFan { .. }
+        ));
+    }
+
+    #[test]
+    fn apply_draft_preserves_resolved_control_profile() {
+        let snapshot = test_snapshot();
+        let mut draft = DraftConfig::default();
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            DraftFanEntry {
+                target_temp_millidegrees: Some(72_000),
+                aggregation: Some(AggregationFn::Median),
+                pid_gains: Some(PidGains {
+                    kp: 2.0,
+                    ki: 0.2,
+                    kd: 0.7,
+                }),
+                cadence: Some(ControlCadence {
+                    sample_interval_ms: 500,
+                    control_interval_ms: 1_500,
+                    write_interval_ms: 2_000,
+                }),
+                deadband_millidegrees: Some(2_500),
+                actuator_policy: Some(ActuatorPolicy {
+                    output_min_percent: 10.0,
+                    output_max_percent: 95.0,
+                    pwm_min: 20,
+                    pwm_max: 240,
+                    startup_kick_percent: 40.0,
+                    startup_kick_ms: 1_800,
+                }),
+                pid_limits: Some(PidLimits {
+                    integral_min: -20.0,
+                    integral_max: 30.0,
+                    derivative_min: -5.0,
+                    derivative_max: 8.0,
+                }),
+                ..managed_draft_entry()
+            },
+        );
+
+        let (applied, result) = apply_draft(&draft, &snapshot, "2026-04-11T12:00:00Z".to_string());
+        assert!(result.all_passed());
+
+        let entry = applied
+            .fans
+            .get("hwmon-test-0000000000000001-fan1")
+            .expect("fan should be applied");
+        assert_eq!(entry.target_temp_millidegrees, 72_000);
+        assert_eq!(entry.aggregation, AggregationFn::Median);
+        assert_eq!(entry.pid_gains.kp, 2.0);
+        assert_eq!(entry.pid_gains.ki, 0.2);
+        assert_eq!(entry.pid_gains.kd, 0.7);
+        assert_eq!(
+            entry.cadence,
+            ControlCadence {
+                sample_interval_ms: 500,
+                control_interval_ms: 1_500,
+                write_interval_ms: 2_000,
+            }
+        );
+        assert_eq!(entry.deadband_millidegrees, 2_500);
+        assert_eq!(entry.actuator_policy.pwm_min, 20);
+        assert_eq!(entry.actuator_policy.pwm_max, 240);
+        assert_eq!(entry.actuator_policy.startup_kick_percent, 40.0);
+        assert_eq!(entry.pid_limits.integral_min, -20.0);
+        assert_eq!(entry.pid_limits.derivative_max, 8.0);
     }
 
     #[test]
