@@ -137,6 +137,14 @@ pub struct AppliedConfig {
     pub applied_at: Option<String>,
 }
 
+fn default_applied_target_temp_millidegrees() -> i64 {
+    65_000
+}
+
+fn default_applied_deadband_millidegrees() -> i64 {
+    1_000
+}
+
 /// A fan that is actively managed by the daemon under the applied config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppliedFanEntry {
@@ -147,18 +155,40 @@ pub struct AppliedFanEntry {
     #[serde(default)]
     pub temp_sources: Vec<String>,
 
+    /// Target temperature in millidegrees Celsius.
+    /// Defaults to 65°C (65000 m°C) when absent from TOML — a conservative
+    /// safe default that results in fans running moderately, not silent.
+    #[serde(default = "default_applied_target_temp_millidegrees")]
     pub target_temp_millidegrees: i64,
 
+    /// Temperature aggregation function.
+    /// Defaults to Average when absent from TOML.
+    #[serde(default)]
     pub aggregation: AggregationFn,
 
+    /// PID controller gains.
+    /// Defaults to PidGains::default() when absent from TOML.
+    #[serde(default)]
     pub pid_gains: PidGains,
 
+    /// Control loop cadence (sample, control, write intervals).
+    /// Defaults to ControlCadence::default() when absent from TOML.
+    #[serde(default)]
     pub cadence: ControlCadence,
 
+    /// Deadband in millidegrees Celsius.
+    /// Defaults to 1°C (1000 m°C) when absent from TOML.
+    #[serde(default = "default_applied_deadband_millidegrees")]
     pub deadband_millidegrees: i64,
 
+    /// Actuator output policy (PWM range, startup kick, etc.).
+    /// Defaults to ActuatorPolicy::default() when absent from TOML.
+    #[serde(default)]
     pub actuator_policy: ActuatorPolicy,
 
+    /// PID integral and derivative clamp limits.
+    /// Defaults to PidLimits::default() when absent from TOML.
+    #[serde(default)]
     pub pid_limits: PidLimits,
 }
 
