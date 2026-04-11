@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-04-10)
 
 **Core value:** Users can safely and flexibly control desktop fan behavior with understandable per-fan PID policies, without losing fail-safe behavior.
-**Current focus:** Phase 1 - Hardware Inventory & Visibility
+**Current focus:** Phase 1 - Hardware Inventory & Visibility (Plan 1: workspace bootstrap and inventory model)
 
 ## Current Position
 
 Phase: 1 of 4 (Hardware Inventory & Visibility)
-Plan: 0 of TBD in current phase
-Status: Ready to plan
-Last activity: 2026-04-10 — Roadmap created and traceability mapped
+Plan: 1 of 4 in current phase
+Status: In progress
+Last activity: 2026-04-11 — Phase 1 plans defined and execution started
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██░░░░░░░░] 20%
 
 ## Performance Metrics
 
@@ -47,7 +47,9 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-None yet.
+- Bootstrap Rust workspace for daemon, CLI, and shared inventory code.
+- Land initial read-only hwmon inventory model and CLI inspection path.
+- Define Phase 1 D-Bus object and snapshot shape before wiring zbus.
 
 ### Blockers/Concerns
 

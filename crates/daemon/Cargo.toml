@@ -1,0 +1,14 @@
+[package]
+name = "kde-fan-control-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clap.workspace = true
+kde-fan-control-core = { path = "../core" }
+serde_json.workspace = true
+tokio.workspace = true
+zbus.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

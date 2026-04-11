@@ -28,7 +28,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. User can inspect each fan channel's capabilities, including available control modes and whether tach or RPM feedback exists.
   3. User can see every discovered endpoint classified as available, partial, or unavailable, with a visible reason when full support is not possible.
   4. User can assign friendly names to detected sensors and fan hardware and see those names persist in inventory views.
-**Plans**: TBD
+**Plans**:
+1. Bootstrap the Rust workspace, shared inventory domain model, and a basic CLI/daemon layout.
+2. Implement read-only hwmon discovery with stable hardware identities, capability extraction, and support classification.
+3. Expose inventory through a versioned daemon-owned D-Bus read surface with snapshot retrieval.
+4. Add CLI inventory commands plus friendly-name persistence for discovered sensors and fan hardware.
 
 ### Phase 2: Safe Enrollment & Lifecycle Recovery
 **Goal**: Users can choose which fans the daemon owns, persist one authoritative configuration, and trust safe behavior across boot and daemon failure.
@@ -40,7 +44,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. User can create and update the single active daemon-owned configuration over DBus-backed CLI flows, and the persisted configuration survives reboot.
   4. After reboot, previously managed fans resume safely from persisted configuration or surface a degraded state instead of silently claiming success.
   5. If the daemon exits unexpectedly, previously daemon-controlled fans move to safe high speed, unmanaged fans remain untouched, and the fallback state is inspectable.
-**Plans**: TBD
+**Plans**:
+1. `02-01-PLAN.md` — Managed config domain and persistence
+2. `02-02-PLAN.md` — DBus draft-apply contract and authorization boundary
+3. `02-03-PLAN.md` — Boot reconciliation, ownership tracking, and fallback lifecycle
+4. `02-04-PLAN.md` — CLI lifecycle flows and inspectable recovery state
 
 ### Phase 3: Temperature Control & Runtime Operations
 **Goal**: Users can run conservative per-fan temperature-based PID control with valid sensor inputs, inspect live runtime state, and use basic auto-tuning.
@@ -73,7 +81,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Hardware Inventory & Visibility | 0/TBD | Not started | - |
-| 2. Safe Enrollment & Lifecycle Recovery | 0/TBD | Not started | - |
+| 1. Hardware Inventory & Visibility | 4/4 defined | In progress | - |
+| 2. Safe Enrollment & Lifecycle Recovery | 4/4 defined | Ready for execution | - |
 | 3. Temperature Control & Runtime Operations | 0/TBD | Not started | - |
 | 4. KDE GUI & Tray Experience | 0/TBD | Not started | - |
