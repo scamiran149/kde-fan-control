@@ -542,6 +542,12 @@ pub const MAX_LIFECYCLE_EVENTS: usize = 64;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DegradedReason {
+    /// A previously managed fan was restored successfully during boot reconciliation.
+    BootRestored { fan_id: String },
+
+    /// Boot reconciliation completed successfully for all managed fans.
+    BootReconciled { restored_count: u32 },
+
     /// A previously managed fan no longer appears in the hardware inventory.
     FanMissing { fan_id: String },
 
@@ -571,6 +577,15 @@ pub enum DegradedReason {
 impl std::fmt::Display for DegradedReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::BootRestored { fan_id } => {
+                write!(f, "fan '{fan_id}' restored as managed on boot")
+            }
+            Self::BootReconciled { restored_count } => {
+                write!(
+                    f,
+                    "boot reconciliation restored {restored_count} managed fan(s)"
+                )
+            }
             Self::FanMissing { fan_id } => {
                 write!(f, "fan '{fan_id}' missing from hardware")
             }
@@ -781,9 +796,11 @@ mod tests {
         let serialized = toml::to_string_pretty(&config).unwrap();
         let deserialized: AppConfig = toml::from_str(&serialized).unwrap();
 
-        assert!(deserialized
-            .draft_fan("hwmon-test-0000000000000001-fan1")
-            .is_some());
+        assert!(
+            deserialized
+                .draft_fan("hwmon-test-0000000000000001-fan1")
+                .is_some()
+        );
         let entry = deserialized
             .draft_fan("hwmon-test-0000000000000001-fan1")
             .unwrap();
@@ -866,9 +883,11 @@ mod tests {
 
         let result = validate_draft(&draft, &snapshot);
         assert!(result.all_passed());
-        assert!(result
-            .enrollable
-            .contains(&"hwmon-test-0000000000000001-fan1".to_string()));
+        assert!(
+            result
+                .enrollable
+                .contains(&"hwmon-test-0000000000000001-fan1".to_string())
+        );
         assert!(result.rejected.is_empty());
     }
 
@@ -1008,9 +1027,11 @@ mod tests {
         let (applied, result) = apply_draft(&draft, &snapshot, "2026-04-11T12:00:00Z".to_string());
 
         // Only the valid fan should appear in applied.
-        assert!(applied
-            .fans
-            .contains_key("hwmon-test-0000000000000001-fan1"));
+        assert!(
+            applied
+                .fans
+                .contains_key("hwmon-test-0000000000000001-fan1")
+        );
         assert!(!applied.fans.contains_key("ghost-fan"));
         assert_eq!(result.rejected.len(), 1);
     }

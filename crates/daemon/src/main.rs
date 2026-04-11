@@ -9,8 +9,8 @@ use kde_fan_control_core::config::{
 };
 use kde_fan_control_core::inventory::{ControlMode, InventorySnapshot, discover, discover_from};
 use kde_fan_control_core::lifecycle::{
-    FallbackResult, OwnedFanSet, RuntimeState, perform_boot_reconciliation,
-    write_fallback_for_owned,
+    FallbackResult, OwnedFanSet, RuntimeState, lifecycle_event_from_fallback_incident,
+    perform_boot_reconciliation, write_fallback_for_owned,
 };
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
@@ -449,10 +449,12 @@ impl LifecycleIface {
         {
             let mut config = self.config.write().await;
             config.set_applied(applied);
+            config.clear_fallback_incident();
             config
                 .save()
                 .map_err(|e| fdo::Error::Failed(format!("config save error: {e}")))?;
         }
+        self.fallback_fan_ids.write().await.clear();
 
         // Emit signals.
         if let Err(e) = emitter.draft_changed().await {
@@ -569,6 +571,125 @@ fn validation_error_to_degraded_reason(
     }
 }
 
+fn record_fallback_incident_for_owned(
+    owned: &OwnedFanSet,
+    config: &mut AppConfig,
+    events: &mut LifecycleEventLog,
+    fallback_fan_ids: &mut HashSet<String>,
+    trigger: String,
+) -> FallbackResult {
+    let result = write_fallback_for_owned(owned);
+    let timestamp = format_iso8601_now();
+    let detail = Some(format!(
+        "{trigger}; {} write(s) succeeded, {} failed",
+        result.succeeded.len(),
+        result.failed.len()
+    ));
+    let incident = kde_fan_control_core::config::FallbackIncident::from_owned_and_result(
+        timestamp, owned, &result, detail,
+    );
+
+    fallback_fan_ids.clear();
+    fallback_fan_ids.extend(incident.fallback_fan_ids());
+
+    if incident.affected_fans.is_empty() {
+        config.clear_fallback_incident();
+        return result;
+    }
+
+    events.push(lifecycle_event_from_fallback_incident(&incident));
+    config.set_fallback_incident(incident);
+
+    result
+}
+
+async fn run_fallback_recorder(
+    owned: &Arc<RwLock<OwnedFanSet>>,
+    config: &Arc<RwLock<AppConfig>>,
+    events: &Arc<RwLock<LifecycleEventLog>>,
+    fallback_fan_ids: &Arc<RwLock<HashSet<String>>>,
+    trigger: String,
+) -> FallbackResult {
+    let owned_guard = owned.read().await;
+    let mut config_guard = config.write().await;
+    let mut events_guard = events.write().await;
+    let mut fallback_guard = fallback_fan_ids.write().await;
+
+    let result = record_fallback_incident_for_owned(
+        &owned_guard,
+        &mut config_guard,
+        &mut events_guard,
+        &mut fallback_guard,
+        trigger,
+    );
+
+    if let Err(error) = config_guard.save() {
+        tracing::error!(error = %error, "failed to persist fallback incident");
+    }
+
+    result
+}
+
+fn run_panic_fallback_recorder(
+    owned: &Arc<RwLock<OwnedFanSet>>,
+    config: &Arc<RwLock<AppConfig>>,
+    events: &Arc<RwLock<LifecycleEventLog>>,
+    fallback_fan_ids: &Arc<RwLock<HashSet<String>>>,
+    trigger: String,
+) -> bool {
+    let Ok(owned_guard) = owned.try_read() else {
+        eprintln!("panic fallback skipped: owned-fan state lock unavailable");
+        return false;
+    };
+    let Ok(mut config_guard) = config.try_write() else {
+        eprintln!("panic fallback skipped: config lock unavailable");
+        return false;
+    };
+    let Ok(mut events_guard) = events.try_write() else {
+        eprintln!("panic fallback skipped: lifecycle-event lock unavailable");
+        return false;
+    };
+    let Ok(mut fallback_guard) = fallback_fan_ids.try_write() else {
+        eprintln!("panic fallback skipped: fallback-state lock unavailable");
+        return false;
+    };
+
+    let result = record_fallback_incident_for_owned(
+        &owned_guard,
+        &mut config_guard,
+        &mut events_guard,
+        &mut fallback_guard,
+        trigger,
+    );
+
+    if let Err(error) = config_guard.save() {
+        eprintln!("panic fallback save failed: {error}");
+    }
+
+    !result.succeeded.is_empty() || !result.failed.is_empty()
+}
+
+fn install_panic_fallback_hook(
+    owned: Arc<RwLock<OwnedFanSet>>,
+    config: Arc<RwLock<AppConfig>>,
+    events: Arc<RwLock<LifecycleEventLog>>,
+    fallback_fan_ids: Arc<RwLock<HashSet<String>>>,
+) {
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let trigger = if let Some(message) = panic_info.payload().downcast_ref::<&str>() {
+            format!("panic hook triggered fallback: {message}")
+        } else if let Some(message) = panic_info.payload().downcast_ref::<String>() {
+            format!("panic hook triggered fallback: {message}")
+        } else {
+            "panic hook triggered fallback".to_string()
+        };
+
+        let _ = run_panic_fallback_recorder(&owned, &config, &events, &fallback_fan_ids, trigger);
+        previous_hook(panic_info);
+    }));
+}
+
 /// Return the current time as an ISO 8601 string (UTC).
 fn format_iso8601_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -639,6 +760,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let persisted_fallback_fan_ids = config
+        .fallback_incident
+        .as_ref()
+        .map(|incident| incident.fallback_fan_ids())
+        .unwrap_or_default();
+
     for device in &mut initial.devices {
         for sensor in &mut device.temperatures {
             sensor.friendly_name = config.sensor_name(&sensor.id).map(|n| n.to_string());
@@ -654,7 +781,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let degraded = Arc::new(RwLock::new(DegradedState::new()));
     let events = Arc::new(RwLock::new(LifecycleEventLog::new()));
     let owned = Arc::new(RwLock::new(OwnedFanSet::new()));
-    let fallback_fan_ids = Arc::new(RwLock::new(HashSet::<String>::new()));
+    let fallback_fan_ids = Arc::new(RwLock::new(persisted_fallback_fan_ids));
+
+    install_panic_fallback_hook(
+        Arc::clone(&owned),
+        Arc::clone(&config),
+        Arc::clone(&events),
+        Arc::clone(&fallback_fan_ids),
+    );
+
+    {
+        let config_guard = config.read().await;
+        if let Some(incident) = config_guard.fallback_incident.as_ref() {
+            events
+                .write()
+                .await
+                .push(lifecycle_event_from_fallback_incident(incident));
+        }
+    }
 
     // -----------------------------------------------------------------------
     // Boot reconciliation: restore managed fans from applied config
@@ -747,33 +891,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -----------------------------------------------------------------------
     // Fallback: drive all owned fans to safe maximum before exit
     // -----------------------------------------------------------------------
-    {
-        let owned_guard = owned.read().await;
-        let fallback_result: FallbackResult = write_fallback_for_owned(&owned_guard);
+    let fallback_result: FallbackResult = run_fallback_recorder(
+        &owned,
+        &config,
+        &events,
+        &fallback_fan_ids,
+        "ctrl-c shutdown".to_string(),
+    )
+    .await;
 
-        if !fallback_result.succeeded.is_empty() {
-            tracing::info!(
-                fans = ?fallback_result.succeeded,
-                "fallback: set fans to safe maximum"
-            );
-        }
-        if !fallback_result.failed.is_empty() {
-            tracing::error!(
-                failures = ?fallback_result.failed,
-                "fallback: some fans could NOT be set to safe maximum"
-            );
-        }
-
-        // Mark fallback fans in runtime state.
-        let mut fallback_ids = fallback_fan_ids.write().await;
-        for fan_id in &fallback_result.succeeded {
-            fallback_ids.insert(fan_id.clone());
-        }
-        for (fan_id, _) in &fallback_result.failed {
-            // Even failed attempts are marked as "intended fallback" so
-            // the state is visible, though the write may not have taken.
-            fallback_ids.insert(fan_id.clone());
-        }
+    if !fallback_result.succeeded.is_empty() {
+        tracing::info!(
+            fans = ?fallback_result.succeeded,
+            "fallback: set fans to safe maximum"
+        );
+    }
+    if !fallback_result.failed.is_empty() {
+        tracing::error!(
+            failures = ?fallback_result.failed,
+            "fallback: some fans could NOT be set to safe maximum"
+        );
     }
 
     tracing::info!("shutdown complete");
@@ -789,11 +926,7 @@ mod tests {
     #[test]
     fn shared_fallback_recorder_persists_incident_for_graceful_shutdown() {
         let mut owned = OwnedFanSet::new();
-        owned.claim_fan(
-            "fan-1",
-            ControlMode::Pwm,
-            "/definitely/missing/pwm1",
-        );
+        owned.claim_fan("fan-1", ControlMode::Pwm, "/definitely/missing/pwm1");
         let mut config = AppConfig::default();
         let mut events = LifecycleEventLog::new();
         let mut fallback_fan_ids = HashSet::new();
@@ -807,7 +940,10 @@ mod tests {
         );
 
         assert_eq!(result.failed.len(), 1);
-        let incident = config.fallback_incident.as_ref().expect("fallback incident");
+        let incident = config
+            .fallback_incident
+            .as_ref()
+            .expect("fallback incident");
         assert_eq!(incident.affected_fans, vec!["fan-1"]);
         assert!(fallback_fan_ids.contains("fan-1"));
         assert!(matches!(
@@ -819,31 +955,21 @@ mod tests {
     #[test]
     fn panic_path_uses_same_fallback_recorder() {
         let mut owned = OwnedFanSet::new();
-        owned.claim_fan(
-            "fan-1",
-            ControlMode::Pwm,
-            "/definitely/missing/pwm1",
-        );
-        let mut config = AppConfig::default();
-        let mut events = LifecycleEventLog::new();
-        let mut fallback_fan_ids = HashSet::new();
+        owned.claim_fan("fan-1", ControlMode::Pwm, "/definitely/missing/pwm1");
+        let owned = Arc::new(RwLock::new(owned));
+        let config = Arc::new(RwLock::new(AppConfig::default()));
+        let events = Arc::new(RwLock::new(LifecycleEventLog::new()));
+        let fallback_fan_ids = Arc::new(RwLock::new(HashSet::new()));
 
-        install_panic_fallback_hook(
-            Arc::new(RwLock::new(owned)),
-            Arc::new(RwLock::new(config.clone())),
-            Arc::new(RwLock::new(events.clone())),
-            Arc::new(RwLock::new(fallback_fan_ids.clone())),
-        );
-
-        let result = record_fallback_incident_for_owned(
-            &OwnedFanSet::new(),
-            &mut config,
-            &mut events,
-            &mut fallback_fan_ids,
+        assert!(run_panic_fallback_recorder(
+            &owned,
+            &config,
+            &events,
+            &fallback_fan_ids,
             "panic: simulated".to_string(),
-        );
+        ));
 
-        assert!(result.all_succeeded());
+        let config = config.try_read().unwrap();
         assert!(config.fallback_incident.is_some());
     }
 }

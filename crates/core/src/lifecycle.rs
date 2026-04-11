@@ -362,6 +362,17 @@ impl FallbackIncident {
     }
 }
 
+/// Reconstruct a lifecycle event from a persisted fallback incident.
+pub fn lifecycle_event_from_fallback_incident(incident: &FallbackIncident) -> LifecycleEvent {
+    LifecycleEvent {
+        timestamp: incident.timestamp.clone(),
+        reason: DegradedReason::FallbackActive {
+            affected_fans: incident.affected_fans.clone(),
+        },
+        detail: incident.detail.clone(),
+    }
+}
+
 /// Try to write safe-maximum output to all owned fans.
 ///
 /// For each owned fan, this writes:
@@ -644,11 +655,8 @@ pub fn perform_boot_reconciliation(
         if let ReconcileOutcome::Restored { fan_id, .. } = outcome {
             events.push(LifecycleEvent {
                 timestamp: timestamp.clone(),
-                reason: DegradedReason::FanMissing {
-                    // Use a different approach — we don't have a "Restored" variant
-                    // in DegradedReason, so record under PartialBootRecovery since
-                    // this is positive restoration.
-                    fan_id: format!("__restored__{fan_id}"),
+                reason: DegradedReason::BootRestored {
+                    fan_id: fan_id.clone(),
                 },
                 detail: Some(format!("fan {fan_id} restored as managed on boot")),
             });
@@ -699,8 +707,8 @@ pub fn perform_boot_reconciliation(
     if !result.restored.is_empty() && result.skipped.is_empty() {
         events.push(LifecycleEvent {
             timestamp,
-            reason: DegradedReason::FanMissing {
-                fan_id: format!("__boot_reconciled__{}", result.restored.len()),
+            reason: DegradedReason::BootReconciled {
+                restored_count: result.restored.len() as u32,
             },
             detail: Some(format!(
                 "all {} managed fans restored successfully on boot",
@@ -863,10 +871,12 @@ mod tests {
         }
 
         // Reconciled config should contain the fan.
-        assert!(result
-            .reconciled_config
-            .fans
-            .contains_key("hwmon-test-0000000000000001-fan1"));
+        assert!(
+            result
+                .reconciled_config
+                .fans
+                .contains_key("hwmon-test-0000000000000001-fan1")
+        );
     }
 
     #[test]
@@ -1025,14 +1035,18 @@ mod tests {
         assert_eq!(result.degraded_reasons.len(), 1);
 
         // Reconciled config should only have the real fan.
-        assert!(result
-            .reconciled_config
-            .fans
-            .contains_key("hwmon-test-0000000000000001-fan1"));
-        assert!(!result
-            .reconciled_config
-            .fans
-            .contains_key("hwmon-ghost-0000000000000003-fan1"));
+        assert!(
+            result
+                .reconciled_config
+                .fans
+                .contains_key("hwmon-test-0000000000000001-fan1")
+        );
+        assert!(
+            !result
+                .reconciled_config
+                .fans
+                .contains_key("hwmon-ghost-0000000000000003-fan1")
+        );
     }
 
     // --- Ownership tests ---
@@ -1206,9 +1220,11 @@ mod tests {
             }
             _ => panic!("expected Managed status for fan1"),
         }
-        assert!(state
-            .owned_fans
-            .contains(&"hwmon-test-0000000000000001-fan1".to_string()));
+        assert!(
+            state
+                .owned_fans
+                .contains(&"hwmon-test-0000000000000001-fan1".to_string())
+        );
     }
 
     #[test]
@@ -1307,10 +1323,12 @@ mod tests {
             incident.affected_fans,
             vec!["hwmon-test-0000000000000001-fan1"]
         );
-        assert!(!incident
-            .affected_fans
-            .iter()
-            .any(|fan| fan == "fan-unmanaged"));
+        assert!(
+            !incident
+                .affected_fans
+                .iter()
+                .any(|fan| fan == "fan-unmanaged")
+        );
     }
 
     #[test]
