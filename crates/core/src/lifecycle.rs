@@ -13,8 +13,8 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    AppliedConfig, AppliedFanEntry, DegradedReason, DegradedState, LifecycleEvent,
-    LifecycleEventLog,
+    AppliedConfig, AppliedFanEntry, DegradedReason, DegradedState, FallbackFailure,
+    FallbackIncident, LifecycleEvent, LifecycleEventLog,
 };
 use crate::inventory::{ControlMode, FanChannel, InventorySnapshot, SupportState};
 
@@ -329,6 +329,36 @@ impl FallbackResult {
     /// Whether all fallback writes succeeded.
     pub fn all_succeeded(&self) -> bool {
         self.failed.is_empty()
+    }
+}
+
+impl FallbackIncident {
+    /// Build a durable fallback incident from the current owned-fan authority
+    /// and the write result returned by `write_fallback_for_owned()`.
+    pub fn from_owned_and_result(
+        timestamp: String,
+        owned: &OwnedFanSet,
+        result: &FallbackResult,
+        detail: Option<String>,
+    ) -> Self {
+        let mut affected_fans: Vec<String> = owned.owned_fan_ids().map(str::to_string).collect();
+        affected_fans.sort();
+
+        let failed = result
+            .failed
+            .iter()
+            .map(|(fan_id, error)| FallbackFailure {
+                fan_id: fan_id.clone(),
+                error: error.clone(),
+            })
+            .collect();
+
+        Self {
+            timestamp,
+            affected_fans,
+            failed,
+            detail,
+        }
     }
 }
 

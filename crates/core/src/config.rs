@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -35,6 +35,13 @@ pub struct AppConfig {
     /// and boot-time recovery. Exactly one in v1.
     #[serde(default)]
     pub applied: Option<AppliedConfig>,
+
+    /// The last fallback incident recorded by the daemon.
+    ///
+    /// This durable record survives process exit so the next daemon start can
+    /// continue surfacing which owned fans were driven toward safe maximum.
+    #[serde(default)]
+    pub fallback_incident: Option<FallbackIncident>,
 }
 
 fn default_version() -> u32 {
@@ -48,6 +55,7 @@ impl Default for AppConfig {
             friendly_names: FriendlyNames::default(),
             draft: DraftConfig::default(),
             applied: None,
+            fallback_incident: None,
         }
     }
 }
@@ -116,6 +124,42 @@ pub struct AppliedFanEntry {
     /// Temperature source IDs used as input for this fan's control loop.
     #[serde(default)]
     pub temp_sources: Vec<String>,
+}
+
+/// A single fan whose fallback write failed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FallbackFailure {
+    /// Stable fan ID that the daemon attempted to protect.
+    pub fan_id: String,
+
+    /// Human-readable write failure description.
+    pub error: String,
+}
+
+/// Durable record of a fallback incident.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FallbackIncident {
+    /// ISO 8601 timestamp when fallback was attempted.
+    pub timestamp: String,
+
+    /// Stable fan IDs that were owned by the daemon when fallback ran.
+    #[serde(default)]
+    pub affected_fans: Vec<String>,
+
+    /// Fans whose safe-maximum write failed.
+    #[serde(default)]
+    pub failed: Vec<FallbackFailure>,
+
+    /// Optional free-form detail explaining why fallback was triggered.
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+impl FallbackIncident {
+    /// Build the fallback fan-id set used by runtime-state reconstruction.
+    pub fn fallback_fan_ids(&self) -> HashSet<String> {
+        self.affected_fans.iter().cloned().collect()
+    }
 }
 
 impl AppConfig {
@@ -220,6 +264,16 @@ impl AppConfig {
     /// Get the current applied config, if any.
     pub fn applied(&self) -> Option<&AppliedConfig> {
         self.applied.as_ref()
+    }
+
+    /// Replace the currently persisted fallback incident.
+    pub fn set_fallback_incident(&mut self, incident: FallbackIncident) {
+        self.fallback_incident = Some(incident);
+    }
+
+    /// Clear the persisted fallback incident.
+    pub fn clear_fallback_incident(&mut self) {
+        self.fallback_incident = None;
     }
 }
 
