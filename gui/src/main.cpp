@@ -16,6 +16,8 @@
 #include "models/sensor_list_model.h"
 #include "models/draft_model.h"
 #include "models/lifecycle_event_model.h"
+#include "tray_icon.h"
+#include "notification_handler.h"
 
 int main(int argc, char *argv[])
 {
@@ -35,6 +37,10 @@ int main(int argc, char *argv[])
     LifecycleEventModel lifecycleEventModel;
     StatusMonitor statusMonitor(&daemonInterface, &fanListModel, &sensorListModel);
 
+    // System tray icon and notification handler (Plan 03).
+    TrayIcon trayIcon(&statusMonitor, &fanListModel);
+    NotificationHandler notificationHandler(&statusMonitor, &fanListModel);
+
     // Wire up initial data loading: once the status monitor detects
     // the daemon is alive it will trigger the model refreshes.
     QMetaObject::invokeMethod(&statusMonitor, &StatusMonitor::checkDaemonConnected,
@@ -49,6 +55,8 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("sensorListModel"), &sensorListModel);
     engine.rootContext()->setContextProperty(QStringLiteral("draftModel"), &draftModel);
     engine.rootContext()->setContextProperty(QStringLiteral("lifecycleEventModel"), &lifecycleEventModel);
+    engine.rootContext()->setContextProperty(QStringLiteral("trayIcon"), &trayIcon);
+    engine.rootContext()->setContextProperty(QStringLiteral("notificationHandler"), &notificationHandler);
 
     // Load the main QML file from the QML module resource.
     const QUrl url(QStringLiteral("qrc:/qt/qml/org/kde/fancontrol/qml/Main.qml"));

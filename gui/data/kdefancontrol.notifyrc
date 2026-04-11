@@ -1,0 +1,21 @@
+[Global]
+IconName=kde-fan-control-gui
+Comment=KDE Fan Control Desktop Notifications
+
+[Event/fallback-active]
+Name=Fallback active
+Comment=Managed fans were driven to safe maximum output
+Action=Popup
+Urgency=High
+
+[Event/degraded-state]
+Name=Fan control degraded
+Comment=One or more managed fans could not be controlled safely
+Action=Popup
+Urgency=High
+
+[Event/high-temp-alert]
+Name=High temperature alert
+Comment=A managed fan is above its target temperature
+Action=Popup
+Urgency=Normal
