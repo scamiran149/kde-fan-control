@@ -109,19 +109,19 @@ enum AutoTuneResultView {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct DraftFanControlProfilePayload {
     #[serde(default)]
-    target_temp_millidegrees: Option<i64>,
+    target_temp_millidegrees: Option<Option<i64>>,
     #[serde(default)]
-    aggregation: Option<AggregationFn>,
+    aggregation: Option<Option<AggregationFn>>,
     #[serde(default)]
-    pid_gains: Option<PidGains>,
+    pid_gains: Option<Option<PidGains>>,
     #[serde(default)]
-    cadence: Option<ControlCadence>,
+    cadence: Option<Option<ControlCadence>>,
     #[serde(default)]
-    deadband_millidegrees: Option<i64>,
+    deadband_millidegrees: Option<Option<i64>>,
     #[serde(default)]
-    actuator_policy: Option<ActuatorPolicy>,
+    actuator_policy: Option<Option<ActuatorPolicy>>,
     #[serde(default)]
-    pid_limits: Option<PidLimits>,
+    pid_limits: Option<Option<PidLimits>>,
 }
 
 impl ControlSupervisor {
@@ -897,13 +897,27 @@ impl ControlIface {
                 .or_insert_with(|| draft_entry_from_applied(&applied_entry))
         };
 
-        draft_entry.target_temp_millidegrees = patch.target_temp_millidegrees;
-        draft_entry.aggregation = patch.aggregation;
-        draft_entry.pid_gains = patch.pid_gains;
-        draft_entry.cadence = patch.cadence;
-        draft_entry.deadband_millidegrees = patch.deadband_millidegrees;
-        draft_entry.actuator_policy = patch.actuator_policy;
-        draft_entry.pid_limits = patch.pid_limits;
+        if let Some(value) = patch.target_temp_millidegrees {
+            draft_entry.target_temp_millidegrees = value;
+        }
+        if let Some(value) = patch.aggregation {
+            draft_entry.aggregation = value;
+        }
+        if let Some(value) = patch.pid_gains {
+            draft_entry.pid_gains = value;
+        }
+        if let Some(value) = patch.cadence {
+            draft_entry.cadence = value;
+        }
+        if let Some(value) = patch.deadband_millidegrees {
+            draft_entry.deadband_millidegrees = value;
+        }
+        if let Some(value) = patch.actuator_policy {
+            draft_entry.actuator_policy = value;
+        }
+        if let Some(value) = patch.pid_limits {
+            draft_entry.pid_limits = value;
+        }
         let response = serde_json::to_string(&*draft_entry)
             .map_err(|e| fdo::Error::Failed(format!("draft serialization error: {e}")))?;
 
@@ -2488,5 +2502,55 @@ mod tests {
                 .startup_kick_percent,
             45.0
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_iface_partial_profile_updates_preserve_unspecified_draft_fields() {
+        let fixture = ControlFixture::new();
+        fixture.write_temp("60000\n");
+        fixture.write_pwm_seed("0\n");
+
+        let (supervisor, config, _) = auto_tune_test_harness(&fixture).await;
+        let iface = ControlIface {
+            supervisor,
+            config: Arc::clone(&config),
+        };
+
+        iface
+            .set_draft_fan_control_profile_for_test(
+                "hwmon-test-0000000000000001-fan1",
+                &serde_json::json!({
+                    "target_temp_millidegrees": 68000,
+                    "aggregation": "max",
+                    "pid_gains": { "kp": 2.5, "ki": 0.3, "kd": 0.9 }
+                })
+                .to_string(),
+                true,
+            )
+            .await
+            .expect("seed profile update should succeed");
+
+        iface
+            .set_draft_fan_control_profile_for_test(
+                "hwmon-test-0000000000000001-fan1",
+                &serde_json::json!({
+                    "deadband_millidegrees": 3500
+                })
+                .to_string(),
+                true,
+            )
+            .await
+            .expect("partial profile update should succeed");
+
+        let config_guard = config.read().await;
+        let draft_entry = config_guard
+            .draft
+            .fans
+            .get("hwmon-test-0000000000000001-fan1")
+            .expect("draft entry should exist");
+        assert_eq!(draft_entry.target_temp_millidegrees, Some(68_000));
+        assert_eq!(draft_entry.aggregation, Some(AggregationFn::Max));
+        assert_eq!(draft_entry.pid_gains.expect("pid gains").kp, 2.5);
+        assert_eq!(draft_entry.deadband_millidegrees, Some(3_500));
     }
 }
