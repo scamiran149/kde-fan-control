@@ -727,11 +727,9 @@ mod tests {
         let serialized = toml::to_string_pretty(&config).unwrap();
         let deserialized: AppConfig = toml::from_str(&serialized).unwrap();
 
-        assert!(
-            deserialized
-                .draft_fan("hwmon-test-0000000000000001-fan1")
-                .is_some()
-        );
+        assert!(deserialized
+            .draft_fan("hwmon-test-0000000000000001-fan1")
+            .is_some());
         let entry = deserialized
             .draft_fan("hwmon-test-0000000000000001-fan1")
             .unwrap();
@@ -767,6 +765,39 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_persisted_fallback_incident() {
+        let mut config = AppConfig::default();
+        config.set_fallback_incident(FallbackIncident {
+            timestamp: "2026-04-11T16:30:00Z".to_string(),
+            affected_fans: vec!["hwmon-test-0000000000000001-fan1".to_string()],
+            failed: vec![FallbackFailure {
+                fan_id: "hwmon-test-0000000000000001-fan1".to_string(),
+                error: "permission denied".to_string(),
+            }],
+            detail: Some("panic hook triggered fallback".to_string()),
+        });
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let deserialized: AppConfig = toml::from_str(&serialized).unwrap();
+
+        let incident = deserialized.fallback_incident.as_ref().unwrap();
+        assert_eq!(incident.timestamp, "2026-04-11T16:30:00Z");
+        assert_eq!(
+            incident.affected_fans,
+            vec!["hwmon-test-0000000000000001-fan1"]
+        );
+        assert_eq!(incident.failed.len(), 1);
+        assert_eq!(
+            incident.failed[0].fan_id,
+            "hwmon-test-0000000000000001-fan1"
+        );
+        assert_eq!(
+            incident.detail.as_deref(),
+            Some("panic hook triggered fallback")
+        );
+    }
+
+    #[test]
     fn validation_accepts_valid_draft() {
         let snapshot = test_snapshot();
         let mut draft = DraftConfig::default();
@@ -781,11 +812,9 @@ mod tests {
 
         let result = validate_draft(&draft, &snapshot);
         assert!(result.all_passed());
-        assert!(
-            result
-                .enrollable
-                .contains(&"hwmon-test-0000000000000001-fan1".to_string())
-        );
+        assert!(result
+            .enrollable
+            .contains(&"hwmon-test-0000000000000001-fan1".to_string()));
         assert!(result.rejected.is_empty());
     }
 
@@ -925,11 +954,9 @@ mod tests {
         let (applied, result) = apply_draft(&draft, &snapshot, "2026-04-11T12:00:00Z".to_string());
 
         // Only the valid fan should appear in applied.
-        assert!(
-            applied
-                .fans
-                .contains_key("hwmon-test-0000000000000001-fan1")
-        );
+        assert!(applied
+            .fans
+            .contains_key("hwmon-test-0000000000000001-fan1"));
         assert!(!applied.fans.contains_key("ghost-fan"));
         assert_eq!(result.rejected.len(), 1);
     }

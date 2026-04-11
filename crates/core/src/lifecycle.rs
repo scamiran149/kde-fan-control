@@ -729,7 +729,7 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AppliedConfig, AppliedFanEntry};
+    use crate::config::{AppliedConfig, AppliedFanEntry, FallbackIncident};
     use crate::inventory::{HwmonDevice, TemperatureSensor};
 
     /// Build a test snapshot with configurable devices and fans.
@@ -833,12 +833,10 @@ mod tests {
         }
 
         // Reconciled config should contain the fan.
-        assert!(
-            result
-                .reconciled_config
-                .fans
-                .contains_key("hwmon-test-0000000000000001-fan1")
-        );
+        assert!(result
+            .reconciled_config
+            .fans
+            .contains_key("hwmon-test-0000000000000001-fan1"));
     }
 
     #[test]
@@ -997,18 +995,14 @@ mod tests {
         assert_eq!(result.degraded_reasons.len(), 1);
 
         // Reconciled config should only have the real fan.
-        assert!(
-            result
-                .reconciled_config
-                .fans
-                .contains_key("hwmon-test-0000000000000001-fan1")
-        );
-        assert!(
-            !result
-                .reconciled_config
-                .fans
-                .contains_key("hwmon-ghost-0000000000000003-fan1")
-        );
+        assert!(result
+            .reconciled_config
+            .fans
+            .contains_key("hwmon-test-0000000000000001-fan1"));
+        assert!(!result
+            .reconciled_config
+            .fans
+            .contains_key("hwmon-ghost-0000000000000003-fan1"));
     }
 
     // --- Ownership tests ---
@@ -1178,11 +1172,9 @@ mod tests {
             }
             _ => panic!("expected Managed status for fan1"),
         }
-        assert!(
-            state
-                .owned_fans
-                .contains(&"hwmon-test-0000000000000001-fan1".to_string())
-        );
+        assert!(state
+            .owned_fans
+            .contains(&"hwmon-test-0000000000000001-fan1".to_string()));
     }
 
     #[test]
@@ -1224,6 +1216,67 @@ mod tests {
             Some(FanRuntimeStatus::Fallback) => {}
             _ => panic!("expected Fallback status for fan1"),
         }
+    }
+
+    #[test]
+    fn runtime_state_rebuild_marks_persisted_fallback_after_restart() {
+        let snapshot = test_snapshot();
+        let applied = applied_config_single_fan();
+        let mut owned = OwnedFanSet::new();
+        owned.claim_fan(
+            "hwmon-test-0000000000000001-fan1",
+            ControlMode::Pwm,
+            "/sys/class/hwmon/hwmon0/pwm1",
+        );
+        let degraded = DegradedState::new();
+        let fallback = FallbackIncident {
+            timestamp: "2026-04-11T16:30:00Z".to_string(),
+            affected_fans: vec!["hwmon-test-0000000000000001-fan1".to_string()],
+            failed: vec![],
+            detail: Some("persisted after panic".to_string()),
+        };
+
+        let state = RuntimeState::build(
+            &owned,
+            Some(&applied),
+            &degraded,
+            &fallback.fallback_fan_ids(),
+            &snapshot,
+        );
+
+        match state.fan_statuses.get("hwmon-test-0000000000000001-fan1") {
+            Some(FanRuntimeStatus::Fallback) => {}
+            other => panic!("expected Fallback after restart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fallback_incident_records_only_owned_fans() {
+        let mut owned = OwnedFanSet::new();
+        owned.claim_fan(
+            "hwmon-test-0000000000000001-fan1",
+            ControlMode::Pwm,
+            "/sys/class/hwmon/hwmon0/pwm1",
+        );
+
+        let incident = FallbackIncident::from_owned_and_result(
+            "2026-04-11T16:30:00Z".to_string(),
+            &owned,
+            &FallbackResult {
+                succeeded: vec!["hwmon-test-0000000000000001-fan1".to_string()],
+                failed: vec![],
+            },
+            Some("ctrl-c fallback".to_string()),
+        );
+
+        assert_eq!(
+            incident.affected_fans,
+            vec!["hwmon-test-0000000000000001-fan1"]
+        );
+        assert!(!incident
+            .affected_fans
+            .iter()
+            .any(|fan| fan == "fan-unmanaged"));
     }
 
     #[test]
