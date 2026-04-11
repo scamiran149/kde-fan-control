@@ -2,15 +2,18 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use std::time::Duration;
 
 use clap::Parser;
+use serde::{Deserialize, Serialize};
 use kde_fan_control_core::config::{
     AppConfig, AppliedFanEntry, DegradedReason, DegradedState, DraftFanEntry, LifecycleEvent,
     LifecycleEventLog, apply_draft, validate_draft,
 };
 use kde_fan_control_core::control::{
-    PidController, map_output_percent_to_pwm, startup_kick_required,
+    ActuatorPolicy, AggregationFn, AutoTuneProposal, ControlCadence, PidController, PidGains,
+    PidLimits, map_output_percent_to_pwm, startup_kick_required,
 };
 use kde_fan_control_core::inventory::{ControlMode, InventorySnapshot, discover, discover_from};
 use kde_fan_control_core::lifecycle::{
@@ -42,11 +45,83 @@ struct ControlSupervisorInner {
     degraded: Arc<RwLock<DegradedState>>,
     tasks: RwLock<HashMap<String, ControlTaskHandle>>,
     status: RwLock<HashMap<String, ControlRuntimeSnapshot>>,
+    auto_tune: RwLock<HashMap<String, AutoTuneExecutionState>>,
+    tuning: RwLock<DaemonTuningSettings>,
+    signal_connection: RwLock<Option<zbus::Connection>>,
 }
 
 #[derive(Clone, Debug)]
 struct ControlSupervisor {
     inner: Arc<ControlSupervisorInner>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DaemonTuningSettings {
+    auto_tune_observation_window_ms: u64,
+}
+
+impl Default for DaemonTuningSettings {
+    fn default() -> Self {
+        Self {
+            auto_tune_observation_window_ms: 30_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AutoTuneSample {
+    elapsed_ms: u64,
+    aggregated_temp_millidegrees: i64,
+}
+
+#[derive(Debug, Clone)]
+enum AutoTuneExecutionState {
+    Running {
+        started_at: Instant,
+        observation_window_ms: u64,
+        samples: Vec<AutoTuneSample>,
+    },
+    Completed {
+        observation_window_ms: u64,
+        proposal: AutoTuneProposal,
+    },
+    Failed {
+        observation_window_ms: u64,
+        error: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum AutoTuneResultView {
+    Idle { observation_window_ms: u64 },
+    Running { observation_window_ms: u64 },
+    Completed {
+        observation_window_ms: u64,
+        proposal: AutoTuneProposal,
+    },
+    Failed {
+        observation_window_ms: u64,
+        error: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct DraftFanControlProfilePayload {
+    #[serde(default)]
+    target_temp_millidegrees: Option<i64>,
+    #[serde(default)]
+    aggregation: Option<AggregationFn>,
+    #[serde(default)]
+    pid_gains: Option<PidGains>,
+    #[serde(default)]
+    cadence: Option<ControlCadence>,
+    #[serde(default)]
+    deadband_millidegrees: Option<i64>,
+    #[serde(default)]
+    actuator_policy: Option<ActuatorPolicy>,
+    #[serde(default)]
+    pid_limits: Option<PidLimits>,
 }
 
 impl ControlSupervisor {
@@ -64,8 +139,19 @@ impl ControlSupervisor {
                 degraded,
                 tasks: RwLock::new(HashMap::new()),
                 status: RwLock::new(HashMap::new()),
+                auto_tune: RwLock::new(HashMap::new()),
+                tuning: RwLock::new(DaemonTuningSettings::default()),
+                signal_connection: RwLock::new(None),
             }),
         }
+    }
+
+    async fn set_signal_connection(&self, connection: zbus::Connection) {
+        *self.inner.signal_connection.write().await = Some(connection);
+    }
+
+    async fn set_auto_tune_observation_window_ms(&self, observation_window_ms: u64) {
+        self.inner.tuning.write().await.auto_tune_observation_window_ms = observation_window_ms;
     }
 
     async fn reconcile(&self) {
@@ -121,6 +207,186 @@ impl ControlSupervisor {
         serde_json::to_string(&*status)
     }
 
+    async fn start_auto_tune(&self, fan_id: &str) -> fdo::Result<()> {
+        let is_managed = {
+            let config = self.inner.config.read().await;
+            config
+                .applied
+                .as_ref()
+                .and_then(|applied| applied.fans.get(fan_id))
+                .is_some()
+        };
+        if !is_managed {
+            return Err(fdo::Error::Failed(format!(
+                "fan '{fan_id}' is not managed by the applied config"
+            )));
+        }
+
+        if !self.inner.owned.read().await.owns(fan_id) {
+            return Err(fdo::Error::Failed(format!(
+                "fan '{fan_id}' is not currently owned by the daemon"
+            )));
+        }
+
+        if !self.inner.status.read().await.contains_key(fan_id) {
+            return Err(fdo::Error::Failed(format!(
+                "fan '{fan_id}' is missing live control state"
+            )));
+        }
+
+        {
+            let auto_tune = self.inner.auto_tune.read().await;
+            if matches!(auto_tune.get(fan_id), Some(AutoTuneExecutionState::Running { .. })) {
+                return Err(fdo::Error::Failed(format!(
+                    "fan '{fan_id}' is already auto-tuning"
+                )));
+            }
+        }
+
+        let observation_window_ms = self.inner.tuning.read().await.auto_tune_observation_window_ms;
+        self.inner.auto_tune.write().await.insert(
+            fan_id.to_string(),
+            AutoTuneExecutionState::Running {
+                started_at: Instant::now(),
+                observation_window_ms,
+                samples: Vec::new(),
+            },
+        );
+        self.update_status(fan_id, |status| {
+            status.auto_tuning = true;
+            status.logical_output_percent = Some(100.0);
+        })
+        .await;
+
+        Ok(())
+    }
+
+    async fn auto_tune_result_json(&self, fan_id: &str) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&self.auto_tune_result_view(fan_id).await)
+    }
+
+    async fn auto_tune_result_view(&self, fan_id: &str) -> AutoTuneResultView {
+        match self.inner.auto_tune.read().await.get(fan_id) {
+            Some(AutoTuneExecutionState::Running {
+                observation_window_ms,
+                ..
+            }) => AutoTuneResultView::Running {
+                observation_window_ms: *observation_window_ms,
+            },
+            Some(AutoTuneExecutionState::Completed {
+                observation_window_ms,
+                proposal,
+            }) => AutoTuneResultView::Completed {
+                observation_window_ms: *observation_window_ms,
+                proposal: proposal.clone(),
+            },
+            Some(AutoTuneExecutionState::Failed {
+                observation_window_ms,
+                error,
+            }) => AutoTuneResultView::Failed {
+                observation_window_ms: *observation_window_ms,
+                error: error.clone(),
+            },
+            None => AutoTuneResultView::Idle {
+                observation_window_ms: self.inner.tuning.read().await.auto_tune_observation_window_ms,
+            },
+        }
+    }
+
+    async fn auto_tune_output_override(&self, fan_id: &str) -> Option<f64> {
+        if matches!(
+            self.inner.auto_tune.read().await.get(fan_id),
+            Some(AutoTuneExecutionState::Running { .. })
+        ) {
+            Some(100.0)
+        } else {
+            None
+        }
+    }
+
+    async fn record_auto_tune_sample(&self, fan_id: &str, aggregated_temp_millidegrees: i64) {
+        let mut should_emit = false;
+        let is_running;
+        {
+            let mut auto_tune = self.inner.auto_tune.write().await;
+            if let Some(AutoTuneExecutionState::Running {
+                started_at,
+                observation_window_ms,
+                samples,
+            }) = auto_tune.get_mut(fan_id)
+            {
+                let elapsed_ms = started_at.elapsed().as_millis() as u64;
+                samples.push(AutoTuneSample {
+                    elapsed_ms,
+                    aggregated_temp_millidegrees,
+                });
+
+                if elapsed_ms >= *observation_window_ms {
+                    let result = proposal_from_auto_tune_samples(*observation_window_ms, samples);
+                    match result {
+                        Ok(proposal) => {
+                            *auto_tune.get_mut(fan_id).expect("state should exist") =
+                                AutoTuneExecutionState::Completed {
+                                    observation_window_ms: *observation_window_ms,
+                                    proposal,
+                                };
+                            should_emit = true;
+                        }
+                        Err(error) => {
+                            *auto_tune.get_mut(fan_id).expect("state should exist") =
+                                AutoTuneExecutionState::Failed {
+                                    observation_window_ms: *observation_window_ms,
+                                    error,
+                                };
+                        }
+                    }
+                }
+            }
+
+            is_running = matches!(auto_tune.get(fan_id), Some(AutoTuneExecutionState::Running { .. }));
+        }
+
+        self.update_status(fan_id, |status| {
+            status.auto_tuning = is_running;
+        })
+        .await;
+
+        if should_emit {
+            self.update_status(fan_id, |status| status.auto_tuning = false).await;
+            if let Some(connection) = self.inner.signal_connection.read().await.clone() {
+                emit_auto_tune_completed(&connection, fan_id).await;
+            }
+        }
+    }
+
+    async fn fail_auto_tune(&self, fan_id: &str, error: String) {
+        let observation_window_ms = self.inner.tuning.read().await.auto_tune_observation_window_ms;
+        self.inner.auto_tune.write().await.insert(
+            fan_id.to_string(),
+            AutoTuneExecutionState::Failed {
+                observation_window_ms,
+                error,
+            },
+        );
+        self.update_status(fan_id, |status| status.auto_tuning = false)
+            .await;
+    }
+
+    async fn accepted_auto_tune_proposal(&self, fan_id: &str) -> fdo::Result<AutoTuneProposal> {
+        match self.inner.auto_tune.read().await.get(fan_id) {
+            Some(AutoTuneExecutionState::Completed { proposal, .. }) => Ok(proposal.clone()),
+            Some(AutoTuneExecutionState::Failed { error, .. }) => {
+                Err(fdo::Error::Failed(format!("auto-tune failed for '{fan_id}': {error}")))
+            }
+            Some(AutoTuneExecutionState::Running { .. }) => Err(fdo::Error::Failed(format!(
+                "auto-tune is still running for '{fan_id}'"
+            ))),
+            None => Err(fdo::Error::Failed(format!(
+                "no auto-tune result is available for '{fan_id}'"
+            ))),
+        }
+    }
+
     async fn run_fan_loop(&self, fan_id: String, entry: AppliedFanEntry) {
         let pwm_path = match self.inner.owned.read().await.sysfs_path(&fan_id) {
             Some(path) => path.to_string(),
@@ -159,14 +425,28 @@ impl ControlSupervisor {
                                 status.aggregated_temp_millidegrees = Some(aggregated_temp);
                                 status.alert_high_temp = aggregated_temp >= status.target_temp_millidegrees + 5_000;
                             }).await;
+                            self.record_auto_tune_sample(&fan_id, aggregated_temp).await;
                         }
                         Err(reason) => {
+                            if self.auto_tune_output_override(&fan_id).await.is_some() {
+                                self.fail_auto_tune(&fan_id, reason.to_string()).await;
+                                latest_output_percent = None;
+                                continue;
+                            }
                             self.degrade_and_stop(&fan_id, reason).await;
                             break;
                         }
                     }
                 }
                 _ = control_interval.tick() => {
+                    if self.auto_tune_output_override(&fan_id).await.is_some() {
+                        latest_output_percent = Some(100.0);
+                        self.update_status(&fan_id, |status| {
+                            status.logical_output_percent = Some(100.0);
+                            status.auto_tuning = true;
+                        }).await;
+                        continue;
+                    }
                     if let Some(aggregated_temp) = latest_aggregated_temp {
                         let output = controller.update(
                             aggregated_temp,
@@ -187,7 +467,7 @@ impl ControlSupervisor {
                         break;
                     }
 
-                    let Some(output_percent) = latest_output_percent else {
+                    let Some(output_percent) = self.auto_tune_output_override(&fan_id).await.or(latest_output_percent) else {
                         continue;
                     };
 
@@ -302,6 +582,57 @@ fn control_snapshot_from_applied(entry: &AppliedFanEntry) -> ControlRuntimeSnaps
     }
 }
 
+fn draft_entry_from_applied(entry: &AppliedFanEntry) -> DraftFanEntry {
+    DraftFanEntry {
+        managed: true,
+        control_mode: Some(entry.control_mode),
+        temp_sources: entry.temp_sources.clone(),
+        target_temp_millidegrees: Some(entry.target_temp_millidegrees),
+        aggregation: Some(entry.aggregation),
+        pid_gains: Some(entry.pid_gains),
+        cadence: Some(entry.cadence),
+        deadband_millidegrees: Some(entry.deadband_millidegrees),
+        actuator_policy: Some(entry.actuator_policy),
+        pid_limits: Some(entry.pid_limits),
+    }
+}
+
+fn proposal_from_auto_tune_samples(
+    observation_window_ms: u64,
+    samples: &[AutoTuneSample],
+) -> Result<AutoTuneProposal, String> {
+    if samples.len() < 2 {
+        return Err("auto-tune needs at least two temperature samples".to_string());
+    }
+
+    let baseline = samples[0].aggregated_temp_millidegrees;
+    let lag_time_ms = samples
+        .iter()
+        .skip(1)
+        .find(|sample| (sample.aggregated_temp_millidegrees - baseline).abs() >= 500)
+        .map(|sample| sample.elapsed_ms.max(1))
+        .unwrap_or_else(|| (observation_window_ms / 4).max(1));
+
+    let mut max_rate_c_per_sec: f64 = 0.0;
+    for window in samples.windows(2) {
+        let earlier = &window[0];
+        let later = &window[1];
+        let dt_ms = later.elapsed_ms.saturating_sub(earlier.elapsed_ms);
+        if dt_ms == 0 {
+            continue;
+        }
+
+        let delta_c = (earlier.aggregated_temp_millidegrees - later.aggregated_temp_millidegrees)
+            .abs() as f64
+            / 1_000.0;
+        let rate = delta_c / (dt_ms as f64 / 1_000.0);
+        max_rate_c_per_sec = max_rate_c_per_sec.max(rate);
+    }
+
+    AutoTuneProposal::from_step_response(observation_window_ms, lag_time_ms, max_rate_c_per_sec)
+        .ok_or_else(|| "auto-tune could not derive a bounded proposal from sampled temperatures".to_string())
+}
+
 fn resolve_temp_sources(snapshot: &InventorySnapshot, temp_sources: &[String]) -> Vec<(String, PathBuf)> {
     temp_sources
         .iter()
@@ -324,6 +655,16 @@ fn write_pwm_value(pwm_path: &str, pwm_value: u16) -> std::io::Result<()> {
         tracing::warn!(path = %pwm_enable_path, error = %error, "failed to set pwm channel to manual mode before write");
     }
     fs::write(pwm_path, pwm_value.to_string())
+}
+
+fn require_test_authorized(authorized: bool) -> fdo::Result<()> {
+    if authorized {
+        Ok(())
+    } else {
+        Err(fdo::Error::AccessDenied(
+            "privileged operations require root access".into(),
+        ))
+    }
 }
 
 #[derive(Parser)]
@@ -491,6 +832,102 @@ struct LifecycleIface {
 
 struct ControlIface {
     supervisor: ControlSupervisor,
+    config: Arc<RwLock<AppConfig>>,
+}
+
+impl ControlIface {
+    async fn accept_auto_tune_inner(&self, fan_id: &str) -> fdo::Result<String> {
+        let proposal = self.supervisor.accepted_auto_tune_proposal(fan_id).await?;
+        let mut config = self.config.write().await;
+
+        let applied_entry = config
+            .applied
+            .as_ref()
+            .and_then(|applied| applied.fans.get(fan_id))
+            .cloned()
+            .ok_or_else(|| {
+                fdo::Error::Failed(format!(
+                    "fan '{fan_id}' is not managed by the applied config"
+                ))
+            })?;
+
+        let draft_entry = config
+            .draft
+            .fans
+            .entry(fan_id.to_string())
+            .or_insert_with(|| draft_entry_from_applied(&applied_entry));
+        draft_entry.pid_gains = Some(proposal.proposed_gains);
+        let response = serde_json::to_string(&*draft_entry)
+            .map_err(|e| fdo::Error::Failed(format!("draft serialization error: {e}")))?;
+
+        config
+            .save()
+            .map_err(|e| fdo::Error::Failed(format!("config save error: {e}")))?;
+
+        Ok(response)
+    }
+
+    async fn set_draft_fan_control_profile_inner(
+        &self,
+        fan_id: &str,
+        profile_json: &str,
+    ) -> fdo::Result<String> {
+        let patch: DraftFanControlProfilePayload = serde_json::from_str(profile_json)
+            .map_err(|e| fdo::Error::Failed(format!("invalid control profile json: {e}")))?;
+
+        let mut config = self.config.write().await;
+        let applied_entry = config
+            .applied
+            .as_ref()
+            .and_then(|applied| applied.fans.get(fan_id))
+            .cloned();
+
+        let draft_entry = if let Some(existing) = config.draft.fans.get_mut(fan_id) {
+            existing
+        } else {
+            let applied_entry = applied_entry.ok_or_else(|| {
+                fdo::Error::Failed(format!(
+                    "fan '{fan_id}' has no existing draft or applied control profile"
+                ))
+            })?;
+            config
+                .draft
+                .fans
+                .entry(fan_id.to_string())
+                .or_insert_with(|| draft_entry_from_applied(&applied_entry))
+        };
+
+        draft_entry.target_temp_millidegrees = patch.target_temp_millidegrees;
+        draft_entry.aggregation = patch.aggregation;
+        draft_entry.pid_gains = patch.pid_gains;
+        draft_entry.cadence = patch.cadence;
+        draft_entry.deadband_millidegrees = patch.deadband_millidegrees;
+        draft_entry.actuator_policy = patch.actuator_policy;
+        draft_entry.pid_limits = patch.pid_limits;
+        let response = serde_json::to_string(&*draft_entry)
+            .map_err(|e| fdo::Error::Failed(format!("draft serialization error: {e}")))?;
+
+        config
+            .save()
+            .map_err(|e| fdo::Error::Failed(format!("config save error: {e}")))?;
+
+        Ok(response)
+    }
+
+    async fn accept_auto_tune_for_test(&self, fan_id: &str, authorized: bool) -> fdo::Result<String> {
+        require_test_authorized(authorized)?;
+        self.accept_auto_tune_inner(fan_id).await
+    }
+
+    async fn set_draft_fan_control_profile_for_test(
+        &self,
+        fan_id: &str,
+        profile_json: &str,
+        authorized: bool,
+    ) -> fdo::Result<String> {
+        require_test_authorized(authorized)?;
+        self.set_draft_fan_control_profile_inner(fan_id, profile_json).await
+    }
 }
 
 #[interface(name = "org.kde.FanControl.Control")]
@@ -502,8 +939,55 @@ impl ControlIface {
             .map_err(|e| fdo::Error::Failed(format!("control status serialization error: {e}")))
     }
 
+    async fn get_auto_tune_result(&self, fan_id: String) -> fdo::Result<String> {
+        self.supervisor
+            .auto_tune_result_json(&fan_id)
+            .await
+            .map_err(|e| fdo::Error::Failed(format!("auto-tune result serialization error: {e}")))
+    }
+
+    async fn start_auto_tune(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        fan_id: String,
+    ) -> fdo::Result<()> {
+        require_authorized(connection, &header).await?;
+        self.supervisor.start_auto_tune(&fan_id).await
+    }
+
+    async fn accept_auto_tune(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        fan_id: String,
+    ) -> fdo::Result<String> {
+        require_authorized(connection, &header).await?;
+        let updated = self.accept_auto_tune_inner(&fan_id).await?;
+        emit_draft_changed(connection).await;
+        Ok(updated)
+    }
+
+    async fn set_draft_fan_control_profile(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        fan_id: String,
+        profile_json: String,
+    ) -> fdo::Result<String> {
+        require_authorized(connection, &header).await?;
+        let updated = self
+            .set_draft_fan_control_profile_inner(&fan_id, &profile_json)
+            .await?;
+        emit_draft_changed(connection).await;
+        Ok(updated)
+    }
+
     #[zbus(signal)]
     async fn control_status_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
+    #[zbus(signal, name = "AutoTuneCompleted")]
+    async fn auto_tune_completed(emitter: &SignalEmitter<'_>, fan_id: &str) -> zbus::Result<()>;
 }
 
 #[interface(name = "org.kde.FanControl.Lifecycle")]
@@ -931,6 +1415,40 @@ async fn emit_control_status_changed(connection: &zbus::Connection) {
     }
 }
 
+async fn emit_draft_changed(connection: &zbus::Connection) {
+    match connection
+        .object_server()
+        .interface::<_, LifecycleIface>(BUS_PATH_LIFECYCLE)
+        .await
+    {
+        Ok(iface_ref) => {
+            if let Err(error) = iface_ref.draft_changed().await {
+                tracing::warn!(error = %error, "failed to emit DraftChanged signal");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to access LifecycleIface for DraftChanged emission");
+        }
+    }
+}
+
+async fn emit_auto_tune_completed(connection: &zbus::Connection, fan_id: &str) {
+    match connection
+        .object_server()
+        .interface::<_, ControlIface>(BUS_PATH_CONTROL)
+        .await
+    {
+        Ok(iface_ref) => {
+            if let Err(error) = iface_ref.auto_tune_completed(fan_id).await {
+                tracing::warn!(error = %error, fan_id = %fan_id, "failed to emit AutoTuneCompleted signal");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, fan_id = %fan_id, "failed to access ControlIface for AutoTuneCompleted emission");
+        }
+    }
+}
+
 fn record_fallback_incident_for_owned(
     owned: &OwnedFanSet,
     config: &mut AppConfig,
@@ -1243,6 +1761,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let control_iface = ControlIface {
         supervisor: control.clone(),
+        config: Arc::clone(&config),
     };
 
     let builder = if args.session_bus {
@@ -1258,6 +1777,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .serve_at(BUS_PATH_CONTROL, control_iface)?
         .build()
         .await?;
+
+    control.set_signal_connection(_connection.clone()).await;
 
     tracing::info!(
         name = BUS_NAME,
@@ -1625,7 +2146,10 @@ mod tests {
         supervisor.reconcile().await;
         tokio::time::sleep(Duration::from_millis(80)).await;
 
-        let iface = ControlIface { supervisor };
+        let iface = ControlIface {
+            supervisor,
+            config: Arc::new(RwLock::new(AppConfig::default())),
+        };
         let status = iface
             .get_control_status()
             .await
@@ -1682,5 +2206,287 @@ mod tests {
         supervisor.reconcile().await;
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(supervisor.status_json().await.expect("status"), "{}");
+    }
+
+    async fn auto_tune_test_harness(
+        fixture: &ControlFixture,
+    ) -> (ControlSupervisor, Arc<RwLock<AppConfig>>, Arc<RwLock<DegradedState>>) {
+        let snapshot = Arc::new(RwLock::new(test_snapshot(fixture.root())));
+        let applied = applied_config_for(
+            "hwmon-test-0000000000000001-fan1",
+            "hwmon-test-0000000000000001-temp1",
+        );
+        let config = Arc::new(RwLock::new(AppConfig {
+            applied: Some(applied),
+            ..AppConfig::default()
+        }));
+        let owned = Arc::new(RwLock::new(OwnedFanSet::new()));
+        owned.write().await.claim_fan(
+            "hwmon-test-0000000000000001-fan1",
+            ControlMode::Pwm,
+            fixture.pwm_path().to_string_lossy().as_ref(),
+        );
+        let degraded = Arc::new(RwLock::new(DegradedState::new()));
+        let supervisor = ControlSupervisor::new(
+            Arc::clone(&snapshot),
+            Arc::clone(&config),
+            owned,
+            Arc::clone(&degraded),
+        );
+        supervisor.set_auto_tune_observation_window_ms(40).await;
+        supervisor.reconcile().await;
+        (supervisor, config, degraded)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_tune_start_puts_managed_fan_into_bounded_running_state() {
+        let fixture = ControlFixture::new();
+        fixture.write_temp("60000\n");
+        fixture.write_pwm_seed("0\n");
+
+        let (supervisor, _, _) = auto_tune_test_harness(&fixture).await;
+        supervisor
+            .start_auto_tune("hwmon-test-0000000000000001-fan1")
+            .await
+            .expect("auto-tune should start");
+
+        let result = supervisor
+            .auto_tune_result_json("hwmon-test-0000000000000001-fan1")
+            .await
+            .expect("auto-tune result should serialize");
+        assert!(result.contains("running"));
+        assert!(result.contains("40"));
+
+        let status = supervisor.status_json().await.expect("status should serialize");
+        assert!(status.contains("\"auto_tuning\":true"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_tune_unreadable_temp_records_failure_without_mutating_applied_gains() {
+        let fixture = ControlFixture::new();
+        fixture.write_pwm_seed("0\n");
+
+        let (supervisor, config, _) = auto_tune_test_harness(&fixture).await;
+        let original_gains = config
+            .read()
+            .await
+            .applied
+            .as_ref()
+            .and_then(|applied| applied.fans.get("hwmon-test-0000000000000001-fan1"))
+            .expect("applied entry should exist")
+            .pid_gains;
+
+        supervisor
+            .start_auto_tune("hwmon-test-0000000000000001-fan1")
+            .await
+            .expect("auto-tune should start");
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        let result = supervisor
+            .auto_tune_result_json("hwmon-test-0000000000000001-fan1")
+            .await
+            .expect("auto-tune result should serialize");
+        assert!(result.contains("failed"));
+
+        let applied_gains = config
+            .read()
+            .await
+            .applied
+            .as_ref()
+            .and_then(|applied| applied.fans.get("hwmon-test-0000000000000001-fan1"))
+            .expect("applied entry should exist")
+            .pid_gains;
+        assert_eq!(applied_gains, original_gains);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_tune_completion_exposes_softened_proposal_without_mutating_applied_gains() {
+        let fixture = ControlFixture::new();
+        fixture.write_temp("60000\n");
+        fixture.write_pwm_seed("0\n");
+
+        let (supervisor, config, _) = auto_tune_test_harness(&fixture).await;
+        let original_gains = config
+            .read()
+            .await
+            .applied
+            .as_ref()
+            .and_then(|applied| applied.fans.get("hwmon-test-0000000000000001-fan1"))
+            .expect("applied entry should exist")
+            .pid_gains;
+
+        supervisor
+            .start_auto_tune("hwmon-test-0000000000000001-fan1")
+            .await
+            .expect("auto-tune should start");
+
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        fixture.write_temp("59000\n");
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        fixture.write_temp("57500\n");
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        let result = supervisor
+            .auto_tune_result_view("hwmon-test-0000000000000001-fan1")
+            .await;
+        match result {
+            AutoTuneResultView::Completed {
+                proposal,
+                observation_window_ms,
+            } => {
+                assert_eq!(observation_window_ms, 40);
+                assert!(proposal.proposed_gains.kp > 0.0);
+                assert!(proposal.proposed_gains.ki > 0.0);
+                assert!(proposal.proposed_gains.kd > 0.0);
+            }
+            other => panic!("expected completed auto-tune result, got {other:?}"),
+        }
+
+        let applied_gains = config
+            .read()
+            .await
+            .applied
+            .as_ref()
+            .and_then(|applied| applied.fans.get("hwmon-test-0000000000000001-fan1"))
+            .expect("applied entry should exist")
+            .pid_gains;
+        assert_eq!(applied_gains, original_gains);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_iface_accept_auto_tune_stages_proposed_gains_into_draft() {
+        let fixture = ControlFixture::new();
+        fixture.write_temp("60000\n");
+        fixture.write_pwm_seed("0\n");
+
+        let (supervisor, config, _) = auto_tune_test_harness(&fixture).await;
+        supervisor
+            .start_auto_tune("hwmon-test-0000000000000001-fan1")
+            .await
+            .expect("auto-tune should start");
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        fixture.write_temp("59000\n");
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        fixture.write_temp("57500\n");
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        let applied_gains = config
+            .read()
+            .await
+            .applied
+            .as_ref()
+            .and_then(|applied| applied.fans.get("hwmon-test-0000000000000001-fan1"))
+            .expect("applied entry should exist")
+            .pid_gains;
+
+        let iface = ControlIface {
+            supervisor,
+            config: Arc::clone(&config),
+        };
+        let updated = iface
+            .accept_auto_tune_for_test("hwmon-test-0000000000000001-fan1", true)
+            .await
+            .expect("accepted gains should stage into draft");
+        assert!(updated.contains("pid_gains"));
+
+        let config_guard = config.read().await;
+        let draft_entry = config_guard
+            .draft
+            .fans
+            .get("hwmon-test-0000000000000001-fan1")
+            .expect("draft entry should exist");
+        assert!(draft_entry.pid_gains.is_some());
+        assert_ne!(draft_entry.pid_gains.expect("gains"), applied_gains);
+        assert_eq!(
+            config_guard
+                .applied
+                .as_ref()
+                .and_then(|applied| applied.fans.get("hwmon-test-0000000000000001-fan1"))
+                .expect("applied entry should exist")
+                .pid_gains,
+            applied_gains
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_iface_profile_mutations_enforce_authorization_and_stage_draft_updates() {
+        let fixture = ControlFixture::new();
+        fixture.write_temp("60000\n");
+        fixture.write_pwm_seed("0\n");
+
+        let (supervisor, config, _) = auto_tune_test_harness(&fixture).await;
+        let iface = ControlIface {
+            supervisor,
+            config: Arc::clone(&config),
+        };
+
+        let unauthorized_accept = iface
+            .accept_auto_tune_for_test("hwmon-test-0000000000000001-fan1", false)
+            .await;
+        assert!(matches!(unauthorized_accept, Err(fdo::Error::AccessDenied(_))));
+
+        let profile_json = serde_json::json!({
+            "target_temp_millidegrees": 68000,
+            "aggregation": "max",
+            "pid_gains": { "kp": 2.5, "ki": 0.3, "kd": 0.9 },
+            "cadence": {
+                "sample_interval_ms": 500,
+                "control_interval_ms": 1000,
+                "write_interval_ms": 1500
+            },
+            "deadband_millidegrees": 2000,
+            "actuator_policy": {
+                "output_min_percent": 10.0,
+                "output_max_percent": 95.0,
+                "pwm_min": 15,
+                "pwm_max": 240,
+                "startup_kick_percent": 45.0,
+                "startup_kick_ms": 1200
+            },
+            "pid_limits": {
+                "integral_min": -20.0,
+                "integral_max": 20.0,
+                "derivative_min": -6.0,
+                "derivative_max": 6.0
+            }
+        })
+        .to_string();
+
+        let unauthorized_profile = iface
+            .set_draft_fan_control_profile_for_test(
+                "hwmon-test-0000000000000001-fan1",
+                &profile_json,
+                false,
+            )
+            .await;
+        assert!(matches!(unauthorized_profile, Err(fdo::Error::AccessDenied(_))));
+
+        let updated = iface
+            .set_draft_fan_control_profile_for_test(
+                "hwmon-test-0000000000000001-fan1",
+                &profile_json,
+                true,
+            )
+            .await
+            .expect("authorized profile update should succeed");
+        assert!(updated.contains("68000"));
+
+        let config_guard = config.read().await;
+        let draft_entry = config_guard
+            .draft
+            .fans
+            .get("hwmon-test-0000000000000001-fan1")
+            .expect("draft entry should exist");
+        assert_eq!(draft_entry.target_temp_millidegrees, Some(68_000));
+        assert_eq!(draft_entry.aggregation, Some(AggregationFn::Max));
+        assert_eq!(draft_entry.pid_gains.expect("pid gains").kp, 2.5);
+        assert_eq!(draft_entry.cadence.expect("cadence").write_interval_ms, 1_500);
+        assert_eq!(
+            draft_entry
+                .actuator_policy
+                .expect("actuator policy")
+                .startup_kick_percent,
+            45.0
+        );
     }
 }
