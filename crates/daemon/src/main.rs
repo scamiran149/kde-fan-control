@@ -20,6 +20,8 @@ use kde_fan_control_core::lifecycle::{
     lifecycle_event_from_fallback_incident, perform_boot_reconciliation, write_fallback_for_owned,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, interval};
@@ -1550,6 +1552,24 @@ async fn emit_control_status_changed(connection: &zbus::Connection) {
     }
 }
 
+async fn wait_for_shutdown_signal() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(unix)]
+    {
+        let mut sigterm = signal(SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result?,
+            _ = sigterm.recv() => {}
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await?;
+        Ok(())
+    }
+}
+
 async fn emit_draft_changed(connection: &zbus::Connection) {
     match connection
         .object_server()
@@ -1922,7 +1942,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Wait for shutdown signal, stop control loops, then drive fallback for
     // any remaining owned fans.
-    tokio::signal::ctrl_c().await?;
+    wait_for_shutdown_signal().await?;
     tracing::info!("shutting down — driving owned fans to safe maximum");
 
     control.stop_all().await;
