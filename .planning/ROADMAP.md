@@ -60,10 +60,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Daemon continuously drives each managed fan from the selected temperature input within safe supported bounds for the chosen hardware mode.
   4. Daemon rejects configurations that would leave a managed fan without a usable temperature input or target temperature.
   5. User can inspect live temperatures, fan-control status, fault state, and tuned PID values, and can trigger basic PID auto-tuning through DBus-backed CLI flows.
-**Plans**:
-1. `03-01-PLAN.md` — Control domain model: PID controller, aggregation functions, config extensions, validation extensions
-2. `03-02-PLAN.md` — DBus Control interface, control supervisor, per-fan PID tasks, auto-tune orchestration
-3. `03-03-PLAN.md` — CLI runtime status display, auto-tune commands, and PID enrollment parameters
+**Plans**: 4 plans
+1. `03-01-PLAN.md` — Control contracts, config schema, validation, and runtime status types
+2. `03-02-PLAN.md` — Daemon control supervisor, live sensor loop, and read-open DBus status
+3. `03-03-PLAN.md` — Auto-tune orchestration and privileged control-profile DBus mutations
+4. `03-04-PLAN.md` — CLI runtime status, control-profile staging, and auto-tune flows
 
 ### Phase 4: KDE GUI & Tray Experience
 **Goal**: Users can monitor and configure KDE Fan Control from a native KDE/Qt6/QML interface and system tray without bypassing the daemon.
@@ -86,5 +87,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 |-------|----------------|--------|-----------|
 | 1. Hardware Inventory & Visibility | 4/4 defined | In progress | - |
 | 2. Safe Enrollment & Lifecycle Recovery | 4/4 defined | Ready for execution | - |
-| 3. Temperature Control & Runtime Operations | 3/3 defined | Ready for execution | - |
+| 3. Temperature Control & Runtime Operations | 4/4 defined | Ready for execution | - |
 | 4. KDE GUI & Tray Experience | 0/TBD | Not started | - |
