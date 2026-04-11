@@ -76,7 +76,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. User can configure fan enrollment, temperature inputs, aggregation function, target temperature, control mode, and PID settings from the GUI.
   3. User can trigger PID auto-tuning from the GUI and review the resulting settings for the managed fan.
   4. User can use the system tray to inspect current status and quickly distinguish unmanaged fans, daemon-controlled fans, and unsupported or degraded hardware.
-**Plans**: TBD
+**Plans**: 4 plans
+- [ ] 04-01-PLAN.md — C++ DBus bridge + QML app shell + Overview dashboard + Inventory page
+- [ ] 04-02-PLAN.md — Fan Detail page + draft editing + auto-tune + advanced tabs
+- [ ] 04-03-PLAN.md — System tray icon + popover + notifications
+- [ ] 04-04-PLAN.md — Guided wizard configuration dialog
 **UI hint**: yes
 
 ## Progress
@@ -89,4 +93,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | 1. Hardware Inventory & Visibility | 4/4 defined | In progress | - |
 | 2. Safe Enrollment & Lifecycle Recovery | 4/4 defined | Ready for execution | - |
 | 3. Temperature Control & Runtime Operations | 4/4 defined | Ready for execution | - |
-| 4. KDE GUI & Tray Experience | 0/TBD | Not started | - |
+| 4. KDE GUI & Tray Experience | 0/4 defined | Ready for execution | - |
