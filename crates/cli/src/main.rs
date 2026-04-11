@@ -212,7 +212,11 @@ trait ControlProxy {
     fn start_auto_tune(&self, fan_id: &str) -> zbus::Result<()>;
     fn get_auto_tune_result(&self, fan_id: &str) -> zbus::Result<String>;
     fn accept_auto_tune(&self, fan_id: &str) -> zbus::Result<String>;
-    fn set_draft_fan_control_profile(&self, fan_id: &str, profile_json: &str) -> zbus::Result<String>;
+    fn set_draft_fan_control_profile(
+        &self,
+        fan_id: &str,
+        profile_json: &str,
+    ) -> zbus::Result<String>;
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -432,7 +436,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })?;
                 println!("✓ Started auto-tune for '{}'.", fan_id);
                 println!("  This run is time-bounded and reviewable before any gains are staged.");
-                println!("  Use 'auto-tune result {}' to check progress and review any proposal.", fan_id);
+                println!(
+                    "  Use 'auto-tune result {}' to check progress and review any proposal.",
+                    fan_id
+                );
             }
             AutoTuneCommand::Result { fan_id } => {
                 let json = run_async(async {
@@ -536,17 +543,15 @@ fn fetch_state_payload(detail: bool) -> Result<Value, Box<dyn std::error::Error>
             None
         };
 
-        let runtime_value = serde_json::from_str::<Value>(&runtime_state).map_err(|error| {
-            zbus::Error::Failure(format!("runtime state parse error: {error}"))
-        })?;
+        let runtime_value = serde_json::from_str::<Value>(&runtime_state)
+            .map_err(|error| zbus::Error::Failure(format!("runtime state parse error: {error}")))?;
         let control_value = serde_json::from_str::<Value>(&control_status).map_err(|error| {
             zbus::Error::Failure(format!("control status parse error: {error}"))
         })?;
         let applied_value = match applied_config {
-            Some(json) => Some(
-                serde_json::from_str::<Value>(&json)
-                    .map_err(|error| zbus::Error::Failure(format!("applied config parse error: {error}")))?,
-            ),
+            Some(json) => Some(serde_json::from_str::<Value>(&json).map_err(|error| {
+                zbus::Error::Failure(format!("applied config parse error: {error}"))
+            })?),
             None => None,
         };
 
@@ -560,13 +565,20 @@ fn fetch_state_payload(detail: bool) -> Result<Value, Box<dyn std::error::Error>
         for fan_id in fan_ids {
             let result = control.get_auto_tune_result(&fan_id).await?;
             let value = serde_json::from_str::<Value>(&result).map_err(|error| {
-                zbus::Error::Failure(format!("auto-tune result parse error for {fan_id}: {error}"))
+                zbus::Error::Failure(format!(
+                    "auto-tune result parse error for {fan_id}: {error}"
+                ))
             })?;
             auto_tune.insert(fan_id, value);
         }
 
-        merge_runtime_payload(runtime_value, control_value, applied_value, Value::Object(auto_tune))
-            .map_err(|error| zbus::Error::Failure(format!("runtime merge error: {error}")))
+        merge_runtime_payload(
+            runtime_value,
+            control_value,
+            applied_value,
+            Value::Object(auto_tune),
+        )
+        .map_err(|error| zbus::Error::Failure(format!("runtime merge error: {error}")))
     })
 }
 
@@ -988,21 +1000,7 @@ fn print_validation_result(json: &str, context: &str) -> Result<(), Box<dyn std:
             println!("Rejected (would block promotion on apply):");
         }
         for rejection in &rejected {
-            // The DBus returns rejected as an array of [fan_id, error_object]
-            // or as a tagged enum object depending on serialization.
-            let fan_id = rejection
-                .get("0")
-                .or_else(|| rejection.get("fan_id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let reason = rejection
-                .get("1")
-                .or_else(|| rejection.get("reason"))
-                .and_then(|v| v.as_str());
-            let kind = rejection
-                .get("1")
-                .and_then(|v| v.get("kind"))
-                .and_then(|v| v.as_str());
+            let (fan_id, reason, kind, support) = parse_rejection_entry(rejection);
 
             if let Some(reason) = reason {
                 println!("  ✗ {}: {}", fan_id, reason);
@@ -1015,14 +1013,10 @@ fn print_validation_result(json: &str, context: &str) -> Result<(), Box<dyn std:
                         );
                     }
                     "fan_not_enrollable" => {
-                        let support = rejection
-                            .get("1")
-                            .and_then(|v| v.get("support_state"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown");
                         println!(
                             "  ✗ {}: fan is not enrollable (support state: {})",
-                            fan_id, support
+                            fan_id,
+                            support.unwrap_or("unknown")
                         );
                     }
                     "unsupported_control_mode" => {
@@ -1061,6 +1055,27 @@ fn print_validation_result(json: &str, context: &str) -> Result<(), Box<dyn std:
     }
 
     Ok(())
+}
+
+fn parse_rejection_entry<'a>(
+    rejection: &'a Value,
+) -> (&'a str, Option<&'a str>, Option<&'a str>, Option<&'a str>) {
+    let tuple = rejection.as_array();
+    let detail = tuple
+        .and_then(|v| v.get(1))
+        .or_else(|| rejection.get("reason"));
+    let fan_id = tuple
+        .and_then(|v| v.first())
+        .or_else(|| rejection.get("fan_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let reason = detail.and_then(|v| v.as_str());
+    let kind = detail.and_then(|v| v.get("kind")).and_then(|v| v.as_str());
+    let support = detail
+        .and_then(|v| v.get("support_state"))
+        .and_then(|v| v.as_str());
+
+    (fan_id, reason, kind, support)
 }
 
 /// Print the runtime state from the daemon, showing managed, degraded,
@@ -1186,7 +1201,10 @@ fn render_runtime_detail_lines(status: &Value) -> Vec<String> {
             .unwrap_or(false);
         lines.push(format!("      sensors: {}", sensors));
         lines.push(format!("      aggregation: {}", aggregation));
-        lines.push(format!("      high-temp alert: {}", if high_temp { "yes" } else { "no" }));
+        lines.push(format!(
+            "      high-temp alert: {}",
+            if high_temp { "yes" } else { "no" }
+        ));
     }
 
     if let Some(profile) = status.get("control_profile") {
@@ -1225,7 +1243,10 @@ fn render_runtime_detail_lines(status: &Value) -> Vec<String> {
 
     if let Some(reasons) = status.get("reasons").and_then(Value::as_array) {
         for reason in reasons {
-            lines.push(format!("      degraded: {}", format_degraded_reason(reason)));
+            lines.push(format!(
+                "      degraded: {}",
+                format_degraded_reason(reason)
+            ));
         }
     }
 
@@ -1243,7 +1264,10 @@ fn state_label(status: &str) -> &'static str {
 }
 
 fn auto_tune_state_label(control: Option<&Value>, auto_tune: Option<&Value>) -> String {
-    if let Some(status) = auto_tune.and_then(|value| value.get("status")).and_then(Value::as_str) {
+    if let Some(status) = auto_tune
+        .and_then(|value| value.get("status"))
+        .and_then(Value::as_str)
+    {
         return status.replace('_', "-");
     }
 
@@ -1259,13 +1283,15 @@ fn auto_tune_state_label(control: Option<&Value>, auto_tune: Option<&Value>) -> 
 }
 
 fn format_millidegrees_value(value: &Value) -> String {
-    value.as_i64()
+    value
+        .as_i64()
         .map(|raw| format!("{:.1} C", raw as f64 / 1000.0))
         .unwrap_or_else(|| "n/a".to_string())
 }
 
 fn format_percent_value(value: &Value) -> String {
-    value.as_f64()
+    value
+        .as_f64()
         .map(|raw| format!("{raw:.1}%"))
         .unwrap_or_else(|| "n/a".to_string())
 }
@@ -1318,7 +1344,10 @@ fn render_auto_tune_result_text(fan_id: &str, value: &Value) -> String {
                     format_float_value(gains.get("kd")),
                 ));
             }
-            lines.push("Use 'auto-tune accept <fan_id>' to stage these gains for review before apply.".to_string());
+            lines.push(
+                "Use 'auto-tune accept <fan_id>' to stage these gains for review before apply."
+                    .to_string(),
+            );
         }
         "failed" => {
             let error = value
@@ -1438,6 +1467,23 @@ mod tests {
         assert!(text.contains("State: completed"));
         assert!(text.contains("Proposed gains: Kp=1.234 Ki=0.456 Kd=0.789"));
         assert!(text.contains("auto-tune accept <fan_id>"));
+    }
+
+    #[test]
+    fn parses_tuple_shaped_rejection_entries() {
+        let rejection = json!([
+            "fan0",
+            {
+                "kind": "fan_not_enrollable",
+                "support_state": "partial"
+            }
+        ]);
+
+        let (fan_id, reason, kind, support) = parse_rejection_entry(&rejection);
+        assert_eq!(fan_id, "fan0");
+        assert_eq!(reason, None);
+        assert_eq!(kind, Some("fan_not_enrollable"));
+        assert_eq!(support, Some("partial"));
     }
 }
 

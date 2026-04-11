@@ -2,11 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
 use std::time::Duration;
+use std::time::Instant;
 
 use clap::Parser;
-use serde::{Deserialize, Serialize};
 use kde_fan_control_core::config::{
     AppConfig, AppliedFanEntry, DegradedReason, DegradedState, DraftFanEntry, LifecycleEvent,
     LifecycleEventLog, apply_draft, validate_draft,
@@ -20,6 +19,7 @@ use kde_fan_control_core::lifecycle::{
     ControlRuntimeSnapshot, FallbackResult, OwnedFanSet, RuntimeState,
     lifecycle_event_from_fallback_incident, perform_boot_reconciliation, write_fallback_for_owned,
 };
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio::time::{MissedTickBehavior, interval};
@@ -94,8 +94,12 @@ enum AutoTuneExecutionState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum AutoTuneResultView {
-    Idle { observation_window_ms: u64 },
-    Running { observation_window_ms: u64 },
+    Idle {
+        observation_window_ms: u64,
+    },
+    Running {
+        observation_window_ms: u64,
+    },
     Completed {
         observation_window_ms: u64,
         proposal: AutoTuneProposal,
@@ -151,7 +155,11 @@ impl ControlSupervisor {
     }
 
     async fn set_auto_tune_observation_window_ms(&self, observation_window_ms: u64) {
-        self.inner.tuning.write().await.auto_tune_observation_window_ms = observation_window_ms;
+        self.inner
+            .tuning
+            .write()
+            .await
+            .auto_tune_observation_window_ms = observation_window_ms;
     }
 
     async fn reconcile(&self) {
@@ -236,14 +244,22 @@ impl ControlSupervisor {
 
         {
             let auto_tune = self.inner.auto_tune.read().await;
-            if matches!(auto_tune.get(fan_id), Some(AutoTuneExecutionState::Running { .. })) {
+            if matches!(
+                auto_tune.get(fan_id),
+                Some(AutoTuneExecutionState::Running { .. })
+            ) {
                 return Err(fdo::Error::Failed(format!(
                     "fan '{fan_id}' is already auto-tuning"
                 )));
             }
         }
 
-        let observation_window_ms = self.inner.tuning.read().await.auto_tune_observation_window_ms;
+        let observation_window_ms = self
+            .inner
+            .tuning
+            .read()
+            .await
+            .auto_tune_observation_window_ms;
         self.inner.auto_tune.write().await.insert(
             fan_id.to_string(),
             AutoTuneExecutionState::Running {
@@ -288,7 +304,12 @@ impl ControlSupervisor {
                 error: error.clone(),
             },
             None => AutoTuneResultView::Idle {
-                observation_window_ms: self.inner.tuning.read().await.auto_tune_observation_window_ms,
+                observation_window_ms: self
+                    .inner
+                    .tuning
+                    .read()
+                    .await
+                    .auto_tune_observation_window_ms,
             },
         }
     }
@@ -343,7 +364,10 @@ impl ControlSupervisor {
                 }
             }
 
-            is_running = matches!(auto_tune.get(fan_id), Some(AutoTuneExecutionState::Running { .. }));
+            is_running = matches!(
+                auto_tune.get(fan_id),
+                Some(AutoTuneExecutionState::Running { .. })
+            );
         }
 
         self.update_status(fan_id, |status| {
@@ -352,7 +376,8 @@ impl ControlSupervisor {
         .await;
 
         if should_emit {
-            self.update_status(fan_id, |status| status.auto_tuning = false).await;
+            self.update_status(fan_id, |status| status.auto_tuning = false)
+                .await;
             if let Some(connection) = self.inner.signal_connection.read().await.clone() {
                 emit_auto_tune_completed(&connection, fan_id).await;
             }
@@ -360,7 +385,12 @@ impl ControlSupervisor {
     }
 
     async fn fail_auto_tune(&self, fan_id: &str, error: String) {
-        let observation_window_ms = self.inner.tuning.read().await.auto_tune_observation_window_ms;
+        let observation_window_ms = self
+            .inner
+            .tuning
+            .read()
+            .await
+            .auto_tune_observation_window_ms;
         self.inner.auto_tune.write().await.insert(
             fan_id.to_string(),
             AutoTuneExecutionState::Failed {
@@ -375,9 +405,9 @@ impl ControlSupervisor {
     async fn accepted_auto_tune_proposal(&self, fan_id: &str) -> fdo::Result<AutoTuneProposal> {
         match self.inner.auto_tune.read().await.get(fan_id) {
             Some(AutoTuneExecutionState::Completed { proposal, .. }) => Ok(proposal.clone()),
-            Some(AutoTuneExecutionState::Failed { error, .. }) => {
-                Err(fdo::Error::Failed(format!("auto-tune failed for '{fan_id}': {error}")))
-            }
+            Some(AutoTuneExecutionState::Failed { error, .. }) => Err(fdo::Error::Failed(format!(
+                "auto-tune failed for '{fan_id}': {error}"
+            ))),
             Some(AutoTuneExecutionState::Running { .. }) => Err(fdo::Error::Failed(format!(
                 "auto-tune is still running for '{fan_id}'"
             ))),
@@ -478,7 +508,9 @@ impl ControlSupervisor {
                             .max(output_percent);
                         let kick_pwm = map_output_percent_to_pwm(kick_percent, &entry.actuator_policy);
                         if let Err(error) = write_pwm_value(&pwm_path, kick_pwm) {
-                            tracing::warn!(fan_id = %fan_id, path = %pwm_path, error = %error, "failed startup-kick pwm write");
+                            tracing::error!(fan_id = %fan_id, path = %pwm_path, error = %error, "failed startup-kick pwm write; degrading fan control");
+                            self.handle_live_write_failure(&fan_id, &error.to_string()).await;
+                            break;
                         }
                         tokio::time::sleep(Duration::from_millis(entry.actuator_policy.startup_kick_ms)).await;
                     }
@@ -494,7 +526,9 @@ impl ControlSupervisor {
                             }).await;
                         }
                         Err(error) => {
-                            tracing::warn!(fan_id = %fan_id, path = %pwm_path, error = %error, "failed pwm control write");
+                            tracing::error!(fan_id = %fan_id, path = %pwm_path, error = %error, "failed pwm control write; degrading fan control");
+                            self.handle_live_write_failure(&fan_id, &error.to_string()).await;
+                            break;
                         }
                     }
                 }
@@ -566,6 +600,26 @@ impl ControlSupervisor {
             .mark_degraded(fan_id.to_string(), vec![reason]);
         self.clear_status(fan_id).await;
     }
+
+    async fn handle_live_write_failure(&self, fan_id: &str, error: &str) {
+        {
+            let owned = self.inner.owned.read().await;
+            if let Err(fallback_error) =
+                kde_fan_control_core::lifecycle::write_fallback_single(fan_id, &owned)
+            {
+                tracing::error!(fan_id = %fan_id, error = %fallback_error, "targeted fallback after pwm write failure failed");
+            }
+        }
+
+        self.inner.owned.write().await.release_fan(fan_id);
+
+        let degraded_reason = DegradedReason::FanNoLongerEnrollable {
+            fan_id: fan_id.to_string(),
+            support_state: kde_fan_control_core::inventory::SupportState::Unavailable,
+            reason: format!("live pwm write failed: {error}"),
+        };
+        self.degrade_and_stop(fan_id, degraded_reason.clone()).await;
+    }
 }
 
 fn control_snapshot_from_applied(entry: &AppliedFanEntry) -> ControlRuntimeSnapshot {
@@ -630,20 +684,30 @@ fn proposal_from_auto_tune_samples(
     }
 
     AutoTuneProposal::from_step_response(observation_window_ms, lag_time_ms, max_rate_c_per_sec)
-        .ok_or_else(|| "auto-tune could not derive a bounded proposal from sampled temperatures".to_string())
+        .ok_or_else(|| {
+            "auto-tune could not derive a bounded proposal from sampled temperatures".to_string()
+        })
 }
 
-fn resolve_temp_sources(snapshot: &InventorySnapshot, temp_sources: &[String]) -> Vec<(String, PathBuf)> {
+fn resolve_temp_sources(
+    snapshot: &InventorySnapshot,
+    temp_sources: &[String],
+) -> Vec<(String, PathBuf)> {
     temp_sources
         .iter()
         .filter_map(|temp_id| {
             snapshot.devices.iter().find_map(|device| {
-                device.temperatures.iter().find(|sensor| &sensor.id == temp_id).map(|sensor| {
-                    (
-                        temp_id.clone(),
-                        PathBuf::from(&device.sysfs_path).join(format!("temp{}_input", sensor.channel)),
-                    )
-                })
+                device
+                    .temperatures
+                    .iter()
+                    .find(|sensor| &sensor.id == temp_id)
+                    .map(|sensor| {
+                        (
+                            temp_id.clone(),
+                            PathBuf::from(&device.sysfs_path)
+                                .join(format!("temp{}_input", sensor.channel)),
+                        )
+                    })
             })
         })
         .collect()
@@ -651,7 +715,10 @@ fn resolve_temp_sources(snapshot: &InventorySnapshot, temp_sources: &[String]) -
 
 fn write_pwm_value(pwm_path: &str, pwm_value: u16) -> std::io::Result<()> {
     let pwm_enable_path = format!("{}_enable", pwm_path);
-    if let Err(error) = fs::write(&pwm_enable_path, kde_fan_control_core::lifecycle::PWM_ENABLE_MANUAL.to_string()) {
+    if let Err(error) = fs::write(
+        &pwm_enable_path,
+        kde_fan_control_core::lifecycle::PWM_ENABLE_MANUAL.to_string(),
+    ) {
         tracing::warn!(path = %pwm_enable_path, error = %error, "failed to set pwm channel to manual mode before write");
     }
     fs::write(pwm_path, pwm_value.to_string())
@@ -830,6 +897,21 @@ struct LifecycleIface {
     control: ControlSupervisor,
 }
 
+fn release_removed_owned_fans(
+    owned: &mut OwnedFanSet,
+    next_owned: &std::collections::HashSet<String>,
+) {
+    for fan_id in owned
+        .owned_fan_ids()
+        .map(str::to_string)
+        .collect::<Vec<_>>()
+    {
+        if !next_owned.contains(&fan_id) {
+            owned.release_fan(&fan_id);
+        }
+    }
+}
+
 struct ControlIface {
     supervisor: ControlSupervisor,
     config: Arc<RwLock<AppConfig>>,
@@ -928,7 +1010,11 @@ impl ControlIface {
         Ok(response)
     }
 
-    async fn accept_auto_tune_for_test(&self, fan_id: &str, authorized: bool) -> fdo::Result<String> {
+    async fn accept_auto_tune_for_test(
+        &self,
+        fan_id: &str,
+        authorized: bool,
+    ) -> fdo::Result<String> {
         require_test_authorized(authorized)?;
         self.accept_auto_tune_inner(fan_id).await
     }
@@ -940,7 +1026,8 @@ impl ControlIface {
         authorized: bool,
     ) -> fdo::Result<String> {
         require_test_authorized(authorized)?;
-        self.set_draft_fan_control_profile_inner(fan_id, profile_json).await
+        self.set_draft_fan_control_profile_inner(fan_id, profile_json)
+            .await
     }
 }
 
@@ -1242,11 +1329,14 @@ impl LifecycleIface {
             }
         }
 
-        // Claim successfully applied fans in the owned set and clear
-        // degraded state for fans that passed validation.
+        // Claim successfully applied fans in the owned set and release any
+        // previously owned fans that are no longer part of the newly applied set.
         {
             let snapshot = self.snapshot.read().await;
             let mut owned = self.owned.write().await;
+            let next_owned: std::collections::HashSet<_> =
+                result.enrollable.iter().cloned().collect();
+            release_removed_owned_fans(&mut owned, &next_owned);
             for fan_id in &result.enrollable {
                 // Find the fan's sysfs path from the current inventory.
                 let fan = snapshot
@@ -1835,9 +1925,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kde_fan_control_core::config::{AppliedConfig, AppliedFanEntry, DegradedState};
-    use kde_fan_control_core::control::{ActuatorPolicy, AggregationFn, ControlCadence, PidGains, PidLimits};
     use kde_fan_control_core::config::LifecycleEventLog;
+    use kde_fan_control_core::config::{AppliedConfig, AppliedFanEntry, DegradedState};
+    use kde_fan_control_core::control::{
+        ActuatorPolicy, AggregationFn, ControlCadence, PidGains, PidLimits,
+    };
     use kde_fan_control_core::inventory::{HwmonDevice, TemperatureSensor};
     use kde_fan_control_core::lifecycle::OwnedFanSet;
     use std::collections::HashMap;
@@ -2033,7 +2125,10 @@ mod tests {
         supervisor.reconcile().await;
         tokio::time::sleep(Duration::from_millis(80)).await;
 
-        let status = supervisor.status_json().await.expect("status should serialize");
+        let status = supervisor
+            .status_json()
+            .await
+            .expect("status should serialize");
         assert!(status.contains("hwmon-test-0000000000000001-fan1"));
         assert!(status.contains("logical_output_percent"));
 
@@ -2077,7 +2172,10 @@ mod tests {
             Some(DegradedReason::TempSourceMissing { .. })
         ));
 
-        let status = supervisor.status_json().await.expect("status should serialize");
+        let status = supervisor
+            .status_json()
+            .await
+            .expect("status should serialize");
         assert!(!status.contains("hwmon-test-0000000000000001-fan1"));
     }
 
@@ -2222,9 +2320,76 @@ mod tests {
         assert_eq!(supervisor.status_json().await.expect("status"), "{}");
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_supervisor_degrades_and_releases_on_pwm_write_failure() {
+        let fixture = ControlFixture::new();
+        fixture.write_temp("56000\n");
+        fixture.write_pwm_seed("0\n");
+
+        let snapshot = Arc::new(RwLock::new(test_snapshot(fixture.root())));
+        let config = Arc::new(RwLock::new(AppConfig {
+            applied: Some(applied_config_for(
+                "hwmon-test-0000000000000001-fan1",
+                "hwmon-test-0000000000000001-temp1",
+            )),
+            ..AppConfig::default()
+        }));
+        let owned = Arc::new(RwLock::new(OwnedFanSet::new()));
+        owned.write().await.claim_fan(
+            "hwmon-test-0000000000000001-fan1",
+            ControlMode::Pwm,
+            fixture.pwm_path().to_string_lossy().as_ref(),
+        );
+        let degraded = Arc::new(RwLock::new(DegradedState::new()));
+
+        let supervisor = ControlSupervisor::new(
+            Arc::clone(&snapshot),
+            Arc::clone(&config),
+            Arc::clone(&owned),
+            Arc::clone(&degraded),
+        );
+        supervisor.reconcile().await;
+        tokio::time::sleep(Duration::from_millis(40)).await;
+
+        fs::remove_file(fixture.pwm_path()).expect("should remove pwm file to force write failure");
+        fs::create_dir(fixture.pwm_path())
+            .expect("should replace pwm file with directory to force write failure");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        assert!(!owned.read().await.owns("hwmon-test-0000000000000001-fan1"));
+        let degraded = degraded.read().await;
+        assert!(
+            degraded
+                .entries
+                .contains_key("hwmon-test-0000000000000001-fan1")
+        );
+        let status = supervisor
+            .status_json()
+            .await
+            .expect("status should serialize");
+        assert!(!status.contains("hwmon-test-0000000000000001-fan1"));
+    }
+
+    #[test]
+    fn release_removed_owned_fans_drops_fans_not_in_next_applied_set() {
+        let mut owned = OwnedFanSet::new();
+        owned.claim_fan("fan-a", ControlMode::Pwm, "/sys/class/hwmon/hwmon0/pwm1");
+        owned.claim_fan("fan-b", ControlMode::Pwm, "/sys/class/hwmon/hwmon0/pwm2");
+
+        let next_owned = HashSet::from(["fan-b".to_string()]);
+        release_removed_owned_fans(&mut owned, &next_owned);
+
+        assert!(!owned.owns("fan-a"));
+        assert!(owned.owns("fan-b"));
+    }
+
     async fn auto_tune_test_harness(
         fixture: &ControlFixture,
-    ) -> (ControlSupervisor, Arc<RwLock<AppConfig>>, Arc<RwLock<DegradedState>>) {
+    ) -> (
+        ControlSupervisor,
+        Arc<RwLock<AppConfig>>,
+        Arc<RwLock<DegradedState>>,
+    ) {
         let snapshot = Arc::new(RwLock::new(test_snapshot(fixture.root())));
         let applied = applied_config_for(
             "hwmon-test-0000000000000001-fan1",
@@ -2271,7 +2436,10 @@ mod tests {
         assert!(result.contains("running"));
         assert!(result.contains("40"));
 
-        let status = supervisor.status_json().await.expect("status should serialize");
+        let status = supervisor
+            .status_json()
+            .await
+            .expect("status should serialize");
         assert!(status.contains("\"auto_tuning\":true"));
     }
 
@@ -2437,7 +2605,10 @@ mod tests {
         let unauthorized_accept = iface
             .accept_auto_tune_for_test("hwmon-test-0000000000000001-fan1", false)
             .await;
-        assert!(matches!(unauthorized_accept, Err(fdo::Error::AccessDenied(_))));
+        assert!(matches!(
+            unauthorized_accept,
+            Err(fdo::Error::AccessDenied(_))
+        ));
 
         let profile_json = serde_json::json!({
             "target_temp_millidegrees": 68000,
@@ -2473,7 +2644,10 @@ mod tests {
                 false,
             )
             .await;
-        assert!(matches!(unauthorized_profile, Err(fdo::Error::AccessDenied(_))));
+        assert!(matches!(
+            unauthorized_profile,
+            Err(fdo::Error::AccessDenied(_))
+        ));
 
         let updated = iface
             .set_draft_fan_control_profile_for_test(
@@ -2494,7 +2668,10 @@ mod tests {
         assert_eq!(draft_entry.target_temp_millidegrees, Some(68_000));
         assert_eq!(draft_entry.aggregation, Some(AggregationFn::Max));
         assert_eq!(draft_entry.pid_gains.expect("pid gains").kp, 2.5);
-        assert_eq!(draft_entry.cadence.expect("cadence").write_interval_ms, 1_500);
+        assert_eq!(
+            draft_entry.cadence.expect("cadence").write_interval_ms,
+            1_500
+        );
         assert_eq!(
             draft_entry
                 .actuator_policy
