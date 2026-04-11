@@ -271,3 +271,163 @@ impl BoolExt for bool {
         !self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn inventory_discovers_pwm_and_voltage_modes_when_pwm_mode_is_writable() {
+        let fixture = HwmonFixture::new();
+        let hwmon = fixture.hwmon("nct6798");
+
+        hwmon.write("fan1_input", "1200\n");
+        hwmon.write("pwm1", "180\n");
+        hwmon.write("pwm1_enable", "1\n");
+        hwmon.write("pwm1_mode", "1\n");
+
+        let snapshot = discover_from(fixture.root()).expect("inventory should load fixture");
+        let fan = first_fan(&snapshot);
+
+        assert_eq!(
+            fan.control_modes,
+            vec![ControlMode::Pwm, ControlMode::Voltage]
+        );
+        assert_eq!(fan.support_state, SupportState::Available);
+        assert_eq!(fan.support_reason, None);
+    }
+
+    #[test]
+    fn inventory_discovers_pwm_only_when_no_voltage_mode_selector_exists() {
+        let fixture = HwmonFixture::new();
+        let hwmon = fixture.hwmon("nct6798");
+
+        hwmon.write("fan1_input", "950\n");
+        hwmon.write("pwm1", "150\n");
+        hwmon.write("pwm1_enable", "1\n");
+
+        let snapshot = discover_from(fixture.root()).expect("inventory should load fixture");
+        let fan = first_fan(&snapshot);
+
+        assert_eq!(fan.control_modes, vec![ControlMode::Pwm]);
+        assert_eq!(fan.support_state, SupportState::Available);
+        assert_eq!(fan.support_reason, None);
+    }
+
+    #[test]
+    fn inventory_does_not_advertise_voltage_when_mode_selector_is_not_writable() {
+        let fixture = HwmonFixture::new();
+        let hwmon = fixture.hwmon("nct6798");
+
+        hwmon.write("fan1_input", "1100\n");
+        hwmon.write("pwm1", "170\n");
+        hwmon.write("pwm1_enable", "1\n");
+        hwmon.write_readonly("pwm1_mode", "1\n");
+
+        let snapshot = discover_from(fixture.root()).expect("inventory should load fixture");
+        let fan = first_fan(&snapshot);
+
+        assert_eq!(fan.control_modes, vec![ControlMode::Pwm]);
+        assert_eq!(fan.support_state, SupportState::Available);
+        assert_eq!(fan.support_reason, None);
+    }
+
+    #[test]
+    fn inventory_snapshot_serialization_carries_discovered_control_modes() {
+        let fixture = HwmonFixture::new();
+        let hwmon = fixture.hwmon("nct6798");
+
+        hwmon.write("fan1_input", "1200\n");
+        hwmon.write("pwm1", "180\n");
+        hwmon.write("pwm1_enable", "1\n");
+        hwmon.write("pwm1_mode", "1\n");
+
+        let snapshot = discover_from(fixture.root()).expect("inventory should load fixture");
+        let serialized = toml::to_string(&snapshot).expect("snapshot should serialize");
+
+        assert!(serialized.contains("control_modes = [\"pwm\", \"voltage\"]"));
+    }
+
+    fn first_fan(snapshot: &InventorySnapshot) -> &FanChannel {
+        &snapshot.devices[0].fans[0]
+    }
+
+    struct HwmonFixture {
+        root: PathBuf,
+    }
+
+    impl HwmonFixture {
+        fn new() -> Self {
+            let unique = format!(
+                "kde-fan-control-inventory-{}-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("clock should be after epoch")
+                    .as_nanos(),
+                TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed)
+            );
+            let root = std::env::temp_dir().join(unique);
+            fs::create_dir_all(&root).expect("fixture root should be created");
+            Self { root }
+        }
+
+        fn root(&self) -> &Path {
+            &self.root
+        }
+
+        fn hwmon(&self, name: &str) -> HwmonDir {
+            let path = self.root.join("hwmon0");
+            fs::create_dir_all(&path).expect("hwmon directory should be created");
+            fs::write(path.join("name"), format!("{name}\n")).expect("name file should be written");
+            HwmonDir { path }
+        }
+    }
+
+    impl Drop for HwmonFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    struct HwmonDir {
+        path: PathBuf,
+    }
+
+    impl HwmonDir {
+        fn write(&self, relative: &str, contents: &str) {
+            let path = self.path.join(relative);
+            fs::write(&path, contents).expect("fixture file should be written");
+            set_mode(&path, 0o644);
+        }
+
+        fn write_readonly(&self, relative: &str, contents: &str) {
+            let path = self.path.join(relative);
+            fs::write(&path, contents).expect("fixture file should be written");
+            set_mode(&path, 0o444);
+        }
+    }
+
+    #[cfg(unix)]
+    fn set_mode(path: &Path, mode: u32) {
+        let permissions = fs::Permissions::from_mode(mode);
+        fs::set_permissions(path, permissions).expect("permissions should be updated");
+    }
+
+    #[cfg(not(unix))]
+    fn set_mode(path: &Path, mode: u32) {
+        let mut permissions = fs::metadata(path)
+            .expect("fixture metadata should be readable")
+            .permissions();
+        permissions.set_readonly(mode & 0o222 == 0);
+        fs::set_permissions(path, permissions).expect("permissions should be updated");
+    }
+}
