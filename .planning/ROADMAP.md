@@ -61,11 +61,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. Daemon rejects configurations that would leave a managed fan without a usable temperature input or target temperature.
   5. User can inspect live temperatures, fan-control status, fault state, and tuned PID values, and can trigger basic PID auto-tuning through DBus-backed CLI flows.
 **Plans**: 5 plans
-- [ ] 03-01-PLAN.md — Control contracts, config schema, validation, and runtime status types
-- [ ] 03-02-PLAN.md — Daemon control supervisor, live sensor loop, and read-open DBus status
-- [ ] 03-03-PLAN.md — Auto-tune orchestration and privileged control-profile DBus mutations
-- [ ] 03-04-PLAN.md — CLI runtime status, control-profile staging, and auto-tune flows
-- [ ] 03-05-PLAN.md — Fix AppliedFanEntry serde defaults for backward compat + suppress dead_code warnings
+- [x] 03-01-PLAN.md — Control contracts, config schema, validation, and runtime status types
+- [x] 03-02-PLAN.md — Daemon control supervisor, live sensor loop, and read-open DBus status
+- [x] 03-03-PLAN.md — Auto-tune orchestration and privileged control-profile DBus mutations
+- [x] 03-04-PLAN.md — CLI runtime status, control-profile staging, and auto-tune flows
+- [x] 03-05-PLAN.md — Fix AppliedFanEntry serde defaults for backward compat + suppress dead_code warnings
 
 ### Phase 4: KDE GUI & Tray Experience
 **Goal**: Users can monitor and configure KDE Fan Control from a native KDE/Qt6/QML interface and system tray without bypassing the daemon.
