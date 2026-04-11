@@ -87,8 +87,19 @@ Kirigami.ScrollablePage {
                 highTempAlert: model.highTempAlert
                 severityOrder: model.severityOrder
                 onClicked: {
-                    // Fan detail page navigation — Plan 02
-                    // pageStack.push(Qt.resolvedUrl("FanDetailPage.qml"), { "fanId": fanId })
+                    pageStack.push(Qt.resolvedUrl("FanDetailPage.qml"), {
+                        "fanId": fanId,
+                        "fanDisplayName": displayName,
+                        "fanSupportState": supportState,
+                        "fanControlMode": controlMode,
+                        "fanState": fanState,
+                        "fanTemperatureMillidegrees": temperatureMillidegrees,
+                        "fanRpm": rpm,
+                        "fanOutputPercent": outputPercent,
+                        "fanHasTach": hasTach,
+                        "fanSupportReason": supportReason,
+                        "fanHighTempAlert": highTempAlert
+                    })
                 }
             }
 

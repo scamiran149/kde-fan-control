@@ -32,10 +32,12 @@ qt_add_qml_module(gui_app
         qml/Main.qml
         qml/OverviewPage.qml
         qml/InventoryPage.qml
+        qml/FanDetailPage.qml
         qml/delegates/FanRowDelegate.qml
         qml/components/StateBadge.qml
         qml/components/OutputBar.qml
         qml/components/TemperatureDisplay.qml
+        qml/components/PidField.qml
     SOURCES
         src/main.cpp
         src/daemon_interface.h
@@ -48,6 +50,10 @@ qt_add_qml_module(gui_app
         src/models/fan_list_model.cpp
         src/models/sensor_list_model.h
         src/models/sensor_list_model.cpp
+        src/models/draft_model.h
+        src/models/draft_model.cpp
+        src/models/lifecycle_event_model.h
+        src/models/lifecycle_event_model.cpp
 )
 
 target_include_directories(gui_app PRIVATE

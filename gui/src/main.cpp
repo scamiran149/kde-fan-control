@@ -14,6 +14,8 @@
 #include "status_monitor.h"
 #include "models/fan_list_model.h"
 #include "models/sensor_list_model.h"
+#include "models/draft_model.h"
+#include "models/lifecycle_event_model.h"
 
 int main(int argc, char *argv[])
 {
@@ -29,6 +31,8 @@ int main(int argc, char *argv[])
     // Reactive model updates driven by DBus signals.
     FanListModel fanListModel;
     SensorListModel sensorListModel;
+    DraftModel draftModel(&daemonInterface);
+    LifecycleEventModel lifecycleEventModel;
     StatusMonitor statusMonitor(&daemonInterface, &fanListModel, &sensorListModel);
 
     // Wire up initial data loading: once the status monitor detects
@@ -43,6 +47,8 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("statusMonitor"), &statusMonitor);
     engine.rootContext()->setContextProperty(QStringLiteral("fanListModel"), &fanListModel);
     engine.rootContext()->setContextProperty(QStringLiteral("sensorListModel"), &sensorListModel);
+    engine.rootContext()->setContextProperty(QStringLiteral("draftModel"), &draftModel);
+    engine.rootContext()->setContextProperty(QStringLiteral("lifecycleEventModel"), &lifecycleEventModel);
 
     // Load the main QML file from the QML module resource.
     const QUrl url(QStringLiteral("qrc:/qt/qml/org/kde/fancontrol/qml/Main.qml"));
