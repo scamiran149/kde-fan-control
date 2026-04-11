@@ -371,8 +371,33 @@ mod tests {
 
         let snapshot = discover_from(fixture.root()).expect("inventory should load fixture");
         let serialized = toml::to_string(&snapshot).expect("snapshot should serialize");
+        let roundtrip: InventorySnapshot = toml::from_str(&serialized)
+            .expect("serialized snapshot should deserialize back into the shared shape");
 
         assert!(serialized.contains("control_modes = [\"pwm\", \"voltage\"]"));
+        assert_eq!(
+            first_fan(&roundtrip).control_modes,
+            vec![ControlMode::Pwm, ControlMode::Voltage]
+        );
+    }
+
+    #[test]
+    fn inventory_snapshot_serialization_keeps_pwm_only_channels_pwm_only() {
+        let fixture = HwmonFixture::new();
+        let hwmon = fixture.hwmon("nct6798");
+
+        hwmon.write("fan1_input", "980\n");
+        hwmon.write("pwm1", "140\n");
+        hwmon.write("pwm1_enable", "1\n");
+
+        let snapshot = discover_from(fixture.root()).expect("inventory should load fixture");
+        let serialized = toml::to_string(&snapshot).expect("snapshot should serialize");
+        let roundtrip: InventorySnapshot = toml::from_str(&serialized)
+            .expect("serialized snapshot should deserialize back into the shared shape");
+
+        assert!(serialized.contains("control_modes = [\"pwm\"]"));
+        assert!(!serialized.contains("control_modes = [\"pwm\", \"voltage\"]"));
+        assert_eq!(first_fan(&roundtrip).control_modes, vec![ControlMode::Pwm]);
     }
 
     fn first_fan(snapshot: &InventorySnapshot) -> &FanChannel {
