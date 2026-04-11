@@ -485,6 +485,35 @@ pub fn write_fallback_single(fan_id: &str, owned: &OwnedFanSet) -> Result<(), St
 // Runtime status model (inspectable via DBus)
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ControlRuntimeSnapshot {
+    pub sensor_ids: Vec<String>,
+    pub aggregation: AggregationFn,
+    pub target_temp_millidegrees: i64,
+    pub aggregated_temp_millidegrees: Option<i64>,
+    pub logical_output_percent: Option<f64>,
+    pub mapped_pwm: Option<u16>,
+    pub auto_tuning: bool,
+    pub alert_high_temp: bool,
+    pub last_error_millidegrees: Option<i64>,
+}
+
+impl ControlRuntimeSnapshot {
+    fn from_applied_entry(entry: &AppliedFanEntry) -> Self {
+        Self {
+            sensor_ids: entry.temp_sources.clone(),
+            aggregation: entry.aggregation,
+            target_temp_millidegrees: entry.target_temp_millidegrees,
+            aggregated_temp_millidegrees: None,
+            logical_output_percent: None,
+            mapped_pwm: None,
+            auto_tuning: false,
+            alert_high_temp: false,
+            last_error_millidegrees: None,
+        }
+    }
+}
+
 /// Per-fan runtime status for the DBus status model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -493,7 +522,10 @@ pub enum FanRuntimeStatus {
     Unmanaged,
 
     /// Fan is actively managed by the daemon.
-    Managed { control_mode: ControlMode },
+    Managed {
+        control_mode: ControlMode,
+        control: ControlRuntimeSnapshot,
+    },
 
     /// Fan was previously managed but is now degraded (skipped at boot
     /// or became unsafe during runtime).
@@ -524,7 +556,7 @@ impl RuntimeState {
     /// degraded state, and the set of fans in fallback.
     pub fn build(
         owned: &OwnedFanSet,
-        _applied: Option<&AppliedConfig>,
+        applied: Option<&AppliedConfig>,
         degraded: &DegradedState,
         fallback_fan_ids: &HashSet<String>,
         snapshot: &InventorySnapshot,
@@ -541,9 +573,16 @@ impl RuntimeState {
         // Then, upgrade owned fans to Managed.
         for fan_id in owned.owned_fan_ids() {
             if let Some(mode) = owned.control_mode(fan_id) {
+                let control = applied
+                    .and_then(|config| config.fans.get(fan_id))
+                    .map(ControlRuntimeSnapshot::from_applied_entry)
+                    .unwrap_or_default();
                 fan_statuses.insert(
                     fan_id.to_string(),
-                    FanRuntimeStatus::Managed { control_mode: mode },
+                    FanRuntimeStatus::Managed {
+                        control_mode: mode,
+                        control,
+                    },
                 );
             }
         }
@@ -1222,8 +1261,16 @@ mod tests {
         let state = RuntimeState::build(&owned, Some(&applied), &degraded, &fallback, &snapshot);
 
         match state.fan_statuses.get("hwmon-test-0000000000000001-fan1") {
-            Some(FanRuntimeStatus::Managed { control_mode }) => {
+            Some(FanRuntimeStatus::Managed {
+                control_mode,
+                control,
+            }) => {
                 assert_eq!(*control_mode, ControlMode::Pwm);
+                assert_eq!(
+                    control.sensor_ids,
+                    vec!["hwmon-test-0000000000000001-temp1".to_string()]
+                );
+                assert_eq!(control.target_temp_millidegrees, 65_000);
             }
             _ => panic!("expected Managed status for fan1"),
         }
@@ -1303,6 +1350,29 @@ mod tests {
             Some(FanRuntimeStatus::Fallback) => {}
             other => panic!("expected Fallback after restart, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn lifecycle_runtime_snapshot_serializes_control_payload() {
+        let status = FanRuntimeStatus::Managed {
+            control_mode: ControlMode::Pwm,
+            control: ControlRuntimeSnapshot {
+                sensor_ids: vec!["temp-a".to_string(), "temp-b".to_string()],
+                aggregation: AggregationFn::Max,
+                target_temp_millidegrees: 70_000,
+                aggregated_temp_millidegrees: Some(72_500),
+                logical_output_percent: Some(62.5),
+                mapped_pwm: Some(159),
+                auto_tuning: true,
+                alert_high_temp: true,
+                last_error_millidegrees: Some(2_500),
+            },
+        };
+
+        let serialized = toml::to_string(&status).expect("status should serialize");
+        assert!(serialized.contains("logical_output_percent"));
+        assert!(serialized.contains("mapped_pwm"));
+        assert!(serialized.contains("aggregation"));
     }
 
     #[test]
