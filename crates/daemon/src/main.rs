@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::RwLock as StdRwLock;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -50,11 +51,17 @@ struct ControlSupervisorInner {
     auto_tune: RwLock<HashMap<String, AutoTuneExecutionState>>,
     tuning: RwLock<DaemonTuningSettings>,
     signal_connection: RwLock<Option<zbus::Connection>>,
+    panic_fallback_mirror: Arc<PanicFallbackMirror>,
 }
 
 #[derive(Clone, Debug)]
 struct ControlSupervisor {
     inner: Arc<ControlSupervisorInner>,
+}
+
+#[derive(Debug, Default)]
+struct PanicFallbackMirror {
+    owned_pwm_paths: StdRwLock<Vec<(String, String)>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -148,8 +155,18 @@ impl ControlSupervisor {
                 auto_tune: RwLock::new(HashMap::new()),
                 tuning: RwLock::new(DaemonTuningSettings::default()),
                 signal_connection: RwLock::new(None),
+                panic_fallback_mirror: Arc::new(PanicFallbackMirror::default()),
             }),
         }
+    }
+
+    fn panic_fallback_mirror(&self) -> Arc<PanicFallbackMirror> {
+        Arc::clone(&self.inner.panic_fallback_mirror)
+    }
+
+    async fn sync_panic_fallback_mirror(&self) {
+        let owned = self.inner.owned.read().await;
+        sync_panic_fallback_mirror_from_owned(&self.inner.panic_fallback_mirror, &owned);
     }
 
     async fn set_signal_connection(&self, connection: zbus::Connection) {
@@ -467,6 +484,16 @@ impl ControlSupervisor {
                                 latest_output_percent = None;
                                 continue;
                             }
+                            {
+                                let owned = self.inner.owned.read().await;
+                                if let Err(error) =
+                                    kde_fan_control_core::lifecycle::write_fallback_single(
+                                        &fan_id, &owned,
+                                    )
+                                {
+                                    tracing::error!(fan_id = %fan_id, error = %error, "fallback write failed after sensor read failure");
+                                }
+                            }
                             self.degrade_and_stop(&fan_id, reason).await;
                             break;
                         }
@@ -616,6 +643,7 @@ impl ControlSupervisor {
         }
 
         self.inner.owned.write().await.release_fan(fan_id);
+        self.sync_panic_fallback_mirror().await;
 
         let degraded_reason = DegradedReason::FanNoLongerEnrollable {
             fan_id: fan_id.to_string(),
@@ -945,6 +973,53 @@ fn release_removed_owned_fans(
         }
     }
     failures
+}
+
+fn sync_panic_fallback_mirror_from_owned(mirror: &PanicFallbackMirror, owned: &OwnedFanSet) {
+    let mut paths = Vec::new();
+    for fan_id in owned.owned_fan_ids() {
+        if let Some(path) = owned.sysfs_path(fan_id) {
+            paths.push((fan_id.to_string(), path.to_string()));
+        }
+    }
+
+    if let Ok(mut guard) = mirror.owned_pwm_paths.write() {
+        *guard = paths;
+    }
+}
+
+fn write_fallback_from_panic_mirror(
+    mirror: &PanicFallbackMirror,
+) -> (Vec<String>, Vec<(String, String)>) {
+    let paths = match mirror.owned_pwm_paths.read() {
+        Ok(guard) => guard.clone(),
+        Err(_) => return (Vec::new(), vec![("mirror".to_string(), "poisoned panic fallback mirror".to_string())]),
+    };
+
+    let mut succeeded = Vec::new();
+    let mut failed = Vec::new();
+
+    for (fan_id, pwm_path) in paths {
+        let pwm_enable_path = format!("{}_enable", pwm_path);
+        if let Err(error) = std::fs::write(
+            &pwm_enable_path,
+            kde_fan_control_core::lifecycle::PWM_ENABLE_MANUAL.to_string(),
+        ) {
+            eprintln!(
+                "panic fallback: could not set manual mode for {fan_id} at {pwm_enable_path}: {error}"
+            );
+        }
+
+        match std::fs::write(
+            &pwm_path,
+            kde_fan_control_core::lifecycle::PWM_SAFE_MAX.to_string(),
+        ) {
+            Ok(()) => succeeded.push(fan_id),
+            Err(error) => failed.push((fan_id, format!("pwm write failed: {error}"))),
+        }
+    }
+
+    (succeeded, failed)
 }
 
 struct ControlIface {
@@ -1432,6 +1507,8 @@ impl LifecycleIface {
                 // Clear degraded state for this fan.
                 self.degraded.write().await.clear_fan(fan_id);
             }
+
+            sync_panic_fallback_mirror_from_owned(&self.control.panic_fallback_mirror(), &owned);
         }
 
         self.control.reconcile().await;
@@ -1735,6 +1812,7 @@ fn install_panic_fallback_hook(
     config: Arc<RwLock<AppConfig>>,
     events: Arc<RwLock<LifecycleEventLog>>,
     fallback_fan_ids: Arc<RwLock<HashSet<String>>>,
+    panic_mirror: Arc<PanicFallbackMirror>,
 ) {
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -1745,6 +1823,14 @@ fn install_panic_fallback_hook(
         } else {
             "panic hook triggered fallback".to_string()
         };
+
+        let (succeeded, failed) = write_fallback_from_panic_mirror(&panic_mirror);
+        if !succeeded.is_empty() {
+            eprintln!("panic fallback wrote safe maximum for fans: {:?}", succeeded);
+        }
+        if !failed.is_empty() {
+            eprintln!("panic fallback failed for fans: {:?}", failed);
+        }
 
         let _ = run_panic_fallback_recorder(&owned, &config, &events, &fallback_fan_ids, trigger);
         previous_hook(panic_info);
@@ -1849,12 +1935,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::clone(&owned),
         Arc::clone(&degraded),
     );
+    let panic_mirror = control.panic_fallback_mirror();
+    control.sync_panic_fallback_mirror().await;
 
     install_panic_fallback_hook(
         Arc::clone(&owned),
         Arc::clone(&config),
         Arc::clone(&events),
         Arc::clone(&fallback_fan_ids),
+        panic_mirror,
     );
 
     {
@@ -1924,6 +2013,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             fallback_fan_ids.write().await.clear();
         }
     }
+
+    control.sync_panic_fallback_mirror().await;
 
     control.reconcile().await;
 
