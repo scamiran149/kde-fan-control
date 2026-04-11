@@ -1397,4 +1397,53 @@ version = 999
         let config = AppConfig::default();
         assert_eq!(config.version, CONFIG_VERSION);
     }
+
+    #[test]
+    fn backward_compat_phase2_config_deserializes_with_defaults() {
+        let phase2_toml = r#"
+            version = 1
+            [friendly_names]
+            [draft]
+
+            [applied]
+            applied_at = "2026-04-10T12:00:00Z"
+
+            [applied.fans.hwmon-test-0000000000000001-fan1]
+            control_mode = "pwm"
+            temp_sources = ["hwmon-test-0000000000000001-temp1"]
+        "#;
+        let config: AppConfig =
+            toml::from_str(phase2_toml).expect("Phase 2 config should deserialize");
+        let applied = config.applied.expect("applied config should exist");
+        let entry = applied
+            .fans
+            .get("hwmon-test-0000000000000001-fan1")
+            .expect("fan entry should exist");
+
+        assert_eq!(entry.control_mode, ControlMode::Pwm);
+        assert_eq!(
+            entry.temp_sources,
+            vec!["hwmon-test-0000000000000001-temp1"]
+        );
+        // Phase 3 defaults filled in:
+        assert_eq!(entry.target_temp_millidegrees, 65_000);
+        assert_eq!(entry.aggregation, AggregationFn::Average);
+        assert_eq!(entry.pid_gains, PidGains::default());
+        assert_eq!(entry.cadence, ControlCadence::default());
+        assert_eq!(entry.deadband_millidegrees, 1_000);
+        assert_eq!(entry.actuator_policy, ActuatorPolicy::default());
+        assert_eq!(entry.pid_limits, PidLimits::default());
+    }
+
+    #[test]
+    fn backward_compat_phase2_config_no_applied_section() {
+        let phase2_toml = r#"
+            version = 1
+            [friendly_names]
+            [draft]
+        "#;
+        let config: AppConfig =
+            toml::from_str(phase2_toml).expect("minimal Phase 2 config should deserialize");
+        assert!(config.applied.is_none());
+    }
 }
