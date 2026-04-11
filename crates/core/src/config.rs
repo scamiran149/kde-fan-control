@@ -612,6 +612,54 @@ impl LifecycleEventLog {
 }
 
 // ---------------------------------------------------------------------------
+// Degraded-state tracking (runtime, not persisted)
+// ---------------------------------------------------------------------------
+
+/// Runtime tracking of which fans are currently in a degraded state
+/// and why. This is reconstructed on boot from applied config + live
+/// inventory, and updated whenever lifecycle events cause fans to
+/// enter or leave degraded state.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DegradedState {
+    /// Per-fan degraded reasons, keyed by stable fan ID.
+    /// A fan may have multiple degraded reasons simultaneously.
+    #[serde(default)]
+    pub entries: HashMap<String, Vec<DegradedReason>>,
+}
+
+impl DegradedState {
+    /// Create an empty degraded state.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Mark a fan as degraded with the given reason(s).
+    pub fn mark_degraded(&mut self, fan_id: String, reasons: Vec<DegradedReason>) {
+        self.entries.insert(fan_id, reasons);
+    }
+
+    /// Clear the degraded state for a specific fan.
+    pub fn clear_fan(&mut self, fan_id: &str) {
+        self.entries.remove(fan_id);
+    }
+
+    /// Clear all degraded entries.
+    pub fn clear_all(&mut self) {
+        self.entries.clear();
+    }
+
+    /// Whether any fans are currently degraded.
+    pub fn has_degraded(&self) -> bool {
+        !self.entries.is_empty()
+    }
+
+    /// Get the set of fan IDs that are currently degraded.
+    pub fn degraded_fan_ids(&self) -> impl Iterator<Item = &str> {
+        self.entries.keys().map(|s| s.as_str())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
