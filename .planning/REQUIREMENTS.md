@@ -129,64 +129,64 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| HW-01 | Unmapped | Pending |
-| HW-02 | Unmapped | Pending |
-| HW-03 | Unmapped | Pending |
-| HW-04 | Unmapped | Pending |
-| HW-05 | Unmapped | Pending |
-| HW-06 | Unmapped | Pending |
-| HW-07 | Unmapped | Pending |
-| HW-08 | Unmapped | Pending |
-| FAN-01 | Unmapped | Pending |
-| FAN-02 | Unmapped | Pending |
-| FAN-03 | Unmapped | Pending |
-| FAN-04 | Unmapped | Pending |
-| FAN-05 | Unmapped | Pending |
-| FAN-06 | Unmapped | Pending |
-| SNS-01 | Unmapped | Pending |
-| SNS-02 | Unmapped | Pending |
-| SNS-03 | Unmapped | Pending |
-| SNS-04 | Unmapped | Pending |
-| SNS-05 | Unmapped | Pending |
-| SNS-06 | Unmapped | Pending |
-| PID-01 | Unmapped | Pending |
-| PID-02 | Unmapped | Pending |
-| PID-03 | Unmapped | Pending |
-| PID-04 | Unmapped | Pending |
-| PID-05 | Unmapped | Pending |
-| PID-06 | Unmapped | Pending |
-| PID-07 | Unmapped | Pending |
-| SAFE-01 | Unmapped | Pending |
-| SAFE-02 | Unmapped | Pending |
-| SAFE-03 | Unmapped | Pending |
-| SAFE-04 | Unmapped | Pending |
-| SAFE-05 | Unmapped | Pending |
-| SAFE-06 | Unmapped | Pending |
-| SAFE-07 | Unmapped | Pending |
-| BUS-01 | Unmapped | Pending |
-| BUS-02 | Unmapped | Pending |
-| BUS-03 | Unmapped | Pending |
-| BUS-04 | Unmapped | Pending |
-| BUS-05 | Unmapped | Pending |
-| BUS-06 | Unmapped | Pending |
-| CONF-01 | Unmapped | Pending |
-| CONF-02 | Unmapped | Pending |
-| CONF-03 | Unmapped | Pending |
-| CLI-01 | Unmapped | Pending |
-| CLI-02 | Unmapped | Pending |
-| CLI-03 | Unmapped | Pending |
-| CLI-04 | Unmapped | Pending |
-| GUI-01 | Unmapped | Pending |
-| GUI-02 | Unmapped | Pending |
-| GUI-03 | Unmapped | Pending |
-| GUI-04 | Unmapped | Pending |
-| GUI-05 | Unmapped | Pending |
+| HW-01 | Phase 1 | Pending |
+| HW-02 | Phase 1 | Pending |
+| HW-03 | Phase 1 | Pending |
+| HW-04 | Phase 1 | Pending |
+| HW-05 | Phase 1 | Pending |
+| HW-06 | Phase 1 | Pending |
+| HW-07 | Phase 1 | Pending |
+| HW-08 | Phase 1 | Pending |
+| FAN-01 | Phase 2 | Pending |
+| FAN-02 | Phase 2 | Pending |
+| FAN-03 | Phase 2 | Pending |
+| FAN-04 | Phase 2 | Pending |
+| FAN-05 | Phase 2 | Pending |
+| FAN-06 | Phase 2 | Pending |
+| SNS-01 | Phase 3 | Pending |
+| SNS-02 | Phase 3 | Pending |
+| SNS-03 | Phase 3 | Pending |
+| SNS-04 | Phase 3 | Pending |
+| SNS-05 | Phase 3 | Pending |
+| SNS-06 | Phase 3 | Pending |
+| PID-01 | Phase 3 | Pending |
+| PID-02 | Phase 3 | Pending |
+| PID-03 | Phase 3 | Pending |
+| PID-04 | Phase 3 | Pending |
+| PID-05 | Phase 3 | Pending |
+| PID-06 | Phase 3 | Pending |
+| PID-07 | Phase 3 | Pending |
+| SAFE-01 | Phase 2 | Pending |
+| SAFE-02 | Phase 2 | Pending |
+| SAFE-03 | Phase 2 | Pending |
+| SAFE-04 | Phase 3 | Pending |
+| SAFE-05 | Phase 2 | Pending |
+| SAFE-06 | Phase 2 | Pending |
+| SAFE-07 | Phase 2 | Pending |
+| BUS-01 | Phase 1 | Pending |
+| BUS-02 | Phase 2 | Pending |
+| BUS-03 | Phase 3 | Pending |
+| BUS-04 | Phase 2 | Pending |
+| BUS-05 | Phase 3 | Pending |
+| BUS-06 | Phase 2 | Pending |
+| CONF-01 | Phase 2 | Pending |
+| CONF-02 | Phase 2 | Pending |
+| CONF-03 | Phase 2 | Pending |
+| CLI-01 | Phase 1 | Pending |
+| CLI-02 | Phase 2 | Pending |
+| CLI-03 | Phase 3 | Pending |
+| CLI-04 | Phase 3 | Pending |
+| GUI-01 | Phase 4 | Pending |
+| GUI-02 | Phase 4 | Pending |
+| GUI-03 | Phase 4 | Pending |
+| GUI-04 | Phase 4 | Pending |
+| GUI-05 | Phase 4 | Pending |
 
 **Coverage:**
 - v1 requirements: 52 total
-- Mapped to phases: 0
-- Unmapped: 52 ⚠️
+- Mapped to phases: 52
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-04-10*
-*Last updated: 2026-04-10 after initial definition*
+*Last updated: 2026-04-10 after roadmap creation*
