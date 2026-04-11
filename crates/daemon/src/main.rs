@@ -173,6 +173,7 @@ impl ControlSupervisor {
         *self.inner.signal_connection.write().await = Some(connection);
     }
 
+    #[allow(dead_code)]
     async fn set_auto_tune_observation_window_ms(&self, observation_window_ms: u64) {
         self.inner
             .tuning
@@ -756,6 +757,7 @@ fn write_pwm_value(pwm_path: &str, pwm_value: u16) -> std::io::Result<()> {
     fs::write(pwm_path, pwm_value.to_string())
 }
 
+#[allow(dead_code)]
 fn require_test_authorized(authorized: bool) -> fdo::Result<()> {
     if authorized {
         Ok(())
@@ -1120,6 +1122,7 @@ impl ControlIface {
         Ok(response)
     }
 
+    #[allow(dead_code)]
     async fn accept_auto_tune_for_test(
         &self,
         fan_id: &str,
@@ -1129,6 +1132,7 @@ impl ControlIface {
         self.accept_auto_tune_inner(fan_id).await
     }
 
+    #[allow(dead_code)]
     async fn set_draft_fan_control_profile_for_test(
         &self,
         fan_id: &str,
