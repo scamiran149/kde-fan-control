@@ -20,6 +20,26 @@ use zbus::{connection::Builder, interface, object_server::SignalEmitter};
 const BUS_NAME: &str = "org.kde.FanControl";
 const BUS_PATH_INVENTORY: &str = "/org/kde/FanControl";
 const BUS_PATH_LIFECYCLE: &str = "/org/kde/FanControl/Lifecycle";
+const BUS_PATH_CONTROL: &str = "/org/kde/FanControl/Control";
+
+struct ControlSupervisor;
+
+impl ControlSupervisor {
+    fn new(
+        _snapshot: Arc<RwLock<InventorySnapshot>>,
+        _config: Arc<RwLock<AppConfig>>,
+        _owned: Arc<RwLock<OwnedFanSet>>,
+        _degraded: Arc<RwLock<DegradedState>>,
+    ) -> Self {
+        Self
+    }
+
+    async fn reconcile(&self) {}
+
+    async fn status_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&std::collections::HashMap::<String, String>::new())
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "kde-fan-control-daemon")]
@@ -274,6 +294,13 @@ impl LifecycleIface {
             managed,
             control_mode: parsed_mode,
             temp_sources,
+            target_temp_millidegrees: None,
+            aggregation: None,
+            pid_gains: None,
+            cadence: None,
+            deadband_millidegrees: None,
+            actuator_policy: None,
+            pid_limits: None,
         };
 
         {
@@ -566,6 +593,17 @@ fn validation_error_to_degraded_reason(
             DegradedReason::TempSourceMissing {
                 fan_id: fan_id.clone(),
                 temp_id: temp_id.clone(),
+            }
+        }
+        kde_fan_control_core::config::ValidationError::MissingTargetTemp { fan_id }
+        | kde_fan_control_core::config::ValidationError::NoSensorForManagedFan { fan_id }
+        | kde_fan_control_core::config::ValidationError::InvalidCadence { fan_id, .. }
+        | kde_fan_control_core::config::ValidationError::InvalidActuatorPolicy { fan_id, .. }
+        | kde_fan_control_core::config::ValidationError::InvalidPidLimits { fan_id, .. } => {
+            DegradedReason::FanNoLongerEnrollable {
+                fan_id: fan_id.clone(),
+                support_state: kde_fan_control_core::inventory::SupportState::Unavailable,
+                reason: error.to_string(),
             }
         }
     }
@@ -926,8 +964,126 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kde_fan_control_core::config::{AppliedConfig, AppliedFanEntry, DegradedState};
+    use kde_fan_control_core::control::{ActuatorPolicy, AggregationFn, ControlCadence, PidGains, PidLimits};
     use kde_fan_control_core::config::LifecycleEventLog;
+    use kde_fan_control_core::inventory::{HwmonDevice, TemperatureSensor};
     use kde_fan_control_core::lifecycle::OwnedFanSet;
+    use std::collections::HashMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn applied_entry(temp_sources: Vec<String>) -> AppliedFanEntry {
+        AppliedFanEntry {
+            control_mode: ControlMode::Pwm,
+            temp_sources,
+            target_temp_millidegrees: 50_000,
+            aggregation: AggregationFn::Average,
+            pid_gains: PidGains {
+                kp: 0.01,
+                ki: 0.0,
+                kd: 0.0,
+            },
+            cadence: ControlCadence {
+                sample_interval_ms: 20,
+                control_interval_ms: 20,
+                write_interval_ms: 20,
+            },
+            deadband_millidegrees: 0,
+            actuator_policy: ActuatorPolicy {
+                output_min_percent: 0.0,
+                output_max_percent: 100.0,
+                pwm_min: 0,
+                pwm_max: 255,
+                startup_kick_percent: 35.0,
+                startup_kick_ms: 1,
+            },
+            pid_limits: PidLimits::default(),
+        }
+    }
+
+    fn applied_config_for(fan_id: &str, temp_id: &str) -> AppliedConfig {
+        AppliedConfig {
+            fans: HashMap::from([(fan_id.to_string(), applied_entry(vec![temp_id.to_string()]))]),
+            applied_at: Some("2026-04-11T12:00:00Z".to_string()),
+        }
+    }
+
+    fn test_snapshot(root: &Path) -> InventorySnapshot {
+        InventorySnapshot {
+            devices: vec![HwmonDevice {
+                id: "hwmon-test-0000000000000001".to_string(),
+                name: "testchip".to_string(),
+                sysfs_path: root.display().to_string(),
+                stable_identity: "/sys/devices/platform/testchip".to_string(),
+                temperatures: vec![TemperatureSensor {
+                    id: "hwmon-test-0000000000000001-temp1".to_string(),
+                    channel: 1,
+                    label: Some("CPU".to_string()),
+                    friendly_name: None,
+                    input_millidegrees_celsius: Some(55_000),
+                }],
+                fans: vec![kde_fan_control_core::inventory::FanChannel {
+                    id: "hwmon-test-0000000000000001-fan1".to_string(),
+                    channel: 1,
+                    label: Some("CPU Fan".to_string()),
+                    friendly_name: None,
+                    rpm_feedback: true,
+                    current_rpm: Some(1200),
+                    control_modes: vec![ControlMode::Pwm],
+                    support_state: kde_fan_control_core::inventory::SupportState::Available,
+                    support_reason: None,
+                }],
+            }],
+        }
+    }
+
+    struct ControlFixture {
+        root: PathBuf,
+    }
+
+    impl ControlFixture {
+        fn new() -> Self {
+            let unique = format!(
+                "kde-fan-control-daemon-control-{}-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("clock should be after epoch")
+                    .as_nanos(),
+                TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed)
+            );
+            let root = std::env::temp_dir().join(unique);
+            fs::create_dir_all(&root).expect("fixture root should be created");
+            Self { root }
+        }
+
+        fn root(&self) -> &Path {
+            &self.root
+        }
+
+        fn write_temp(&self, value: &str) {
+            fs::write(self.root.join("temp1_input"), value).expect("temp input should be written");
+        }
+
+        fn write_pwm_seed(&self, value: &str) {
+            fs::write(self.root.join("pwm1"), value).expect("pwm file should be written");
+        }
+
+        fn pwm_path(&self) -> PathBuf {
+            self.root.join("pwm1")
+        }
+    }
+
+    impl Drop for ControlFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
 
     #[test]
     fn shared_fallback_recorder_persists_incident_for_graceful_shutdown() {
@@ -977,5 +1133,134 @@ mod tests {
 
         let config = config.try_read().unwrap();
         assert!(config.fallback_incident.is_some());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_supervisor_runs_managed_fan_loops_and_writes_pwm() {
+        let fixture = ControlFixture::new();
+        fixture.write_temp("55000\n");
+        fixture.write_pwm_seed("0\n");
+
+        let snapshot = Arc::new(RwLock::new(test_snapshot(fixture.root())));
+        let applied = applied_config_for(
+            "hwmon-test-0000000000000001-fan1",
+            "hwmon-test-0000000000000001-temp1",
+        );
+        let config = Arc::new(RwLock::new(AppConfig {
+            applied: Some(applied),
+            ..AppConfig::default()
+        }));
+        let owned = Arc::new(RwLock::new(OwnedFanSet::new()));
+        owned.write().await.claim_fan(
+            "hwmon-test-0000000000000001-fan1",
+            ControlMode::Pwm,
+            fixture.pwm_path().to_string_lossy().as_ref(),
+        );
+        let degraded = Arc::new(RwLock::new(DegradedState::new()));
+
+        let supervisor = ControlSupervisor::new(snapshot, config, owned, degraded);
+        supervisor.reconcile().await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        let status = supervisor.status_json().await.expect("status should serialize");
+        assert!(status.contains("hwmon-test-0000000000000001-fan1"));
+        assert!(status.contains("logical_output_percent"));
+
+        let pwm = fs::read_to_string(fixture.pwm_path()).expect("pwm should be readable");
+        assert_ne!(pwm.trim(), "0");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_supervisor_degrades_when_all_temp_sources_fail() {
+        let fixture = ControlFixture::new();
+        fixture.write_pwm_seed("0\n");
+
+        let snapshot = Arc::new(RwLock::new(test_snapshot(fixture.root())));
+        let applied = applied_config_for(
+            "hwmon-test-0000000000000001-fan1",
+            "hwmon-test-0000000000000001-temp1",
+        );
+        let config = Arc::new(RwLock::new(AppConfig {
+            applied: Some(applied),
+            ..AppConfig::default()
+        }));
+        let owned = Arc::new(RwLock::new(OwnedFanSet::new()));
+        owned.write().await.claim_fan(
+            "hwmon-test-0000000000000001-fan1",
+            ControlMode::Pwm,
+            fixture.pwm_path().to_string_lossy().as_ref(),
+        );
+        let degraded = Arc::new(RwLock::new(DegradedState::new()));
+
+        let supervisor = ControlSupervisor::new(snapshot, config, owned, Arc::clone(&degraded));
+        supervisor.reconcile().await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        let degraded = degraded.read().await;
+        let reasons = degraded
+            .entries
+            .get("hwmon-test-0000000000000001-fan1")
+            .expect("fan should be degraded");
+        assert!(matches!(
+            reasons.first(),
+            Some(DegradedReason::TempSourceMissing { .. })
+        ));
+
+        let status = supervisor.status_json().await.expect("status should serialize");
+        assert!(!status.contains("hwmon-test-0000000000000001-fan1"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_supervisor_skips_unowned_fans_and_stops_after_ownership_loss() {
+        let fixture = ControlFixture::new();
+        fixture.write_temp("57000\n");
+        fixture.write_pwm_seed("0\n");
+
+        let snapshot = Arc::new(RwLock::new(test_snapshot(fixture.root())));
+        let applied = applied_config_for(
+            "hwmon-test-0000000000000001-fan1",
+            "hwmon-test-0000000000000001-temp1",
+        );
+        let config = Arc::new(RwLock::new(AppConfig {
+            applied: Some(applied),
+            ..AppConfig::default()
+        }));
+        let owned = Arc::new(RwLock::new(OwnedFanSet::new()));
+        let degraded = Arc::new(RwLock::new(DegradedState::new()));
+
+        let supervisor = ControlSupervisor::new(
+            Arc::clone(&snapshot),
+            Arc::clone(&config),
+            Arc::clone(&owned),
+            degraded,
+        );
+        supervisor.reconcile().await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(
+            fs::read_to_string(fixture.pwm_path())
+                .expect("pwm should be readable")
+                .trim(),
+            "0"
+        );
+
+        owned.write().await.claim_fan(
+            "hwmon-test-0000000000000001-fan1",
+            ControlMode::Pwm,
+            fixture.pwm_path().to_string_lossy().as_ref(),
+        );
+        supervisor.reconcile().await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let written = fs::read_to_string(fixture.pwm_path()).expect("pwm should be readable");
+        assert_ne!(written.trim(), "0");
+
+        owned
+            .write()
+            .await
+            .release_fan("hwmon-test-0000000000000001-fan1");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let after_release = fs::read_to_string(fixture.pwm_path()).expect("pwm should be readable");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let final_pwm = fs::read_to_string(fixture.pwm_path()).expect("pwm should be readable");
+        assert_eq!(after_release, final_pwm);
     }
 }
