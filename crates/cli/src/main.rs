@@ -322,12 +322,12 @@ async fn connect_lifecycle_proxy() -> zbus::Result<LifecycleProxyProxy<'static>>
 }
 
 async fn connect_dbus() -> zbus::Result<zbus::Connection> {
-    match zbus::connection::Builder::session()?.build().await {
+    match zbus::connection::Builder::system()?.build().await {
         Ok(c) => Ok(c),
         Err(_) => {
-            // Session bus failed, try system bus.
-            // The system bus is where the daemon normally runs as a system service.
-            zbus::connection::Builder::system()?.build().await
+            // System bus is the normal daemon location. Fall back to session bus
+            // for local development runs that explicitly use `--session-bus`.
+            zbus::connection::Builder::session()?.build().await
         }
     }
 }
