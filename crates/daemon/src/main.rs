@@ -779,3 +779,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("shutdown complete");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kde_fan_control_core::config::LifecycleEventLog;
+    use kde_fan_control_core::lifecycle::OwnedFanSet;
+
+    #[test]
+    fn shared_fallback_recorder_persists_incident_for_graceful_shutdown() {
+        let mut owned = OwnedFanSet::new();
+        owned.claim_fan(
+            "fan-1",
+            ControlMode::Pwm,
+            "/definitely/missing/pwm1",
+        );
+        let mut config = AppConfig::default();
+        let mut events = LifecycleEventLog::new();
+        let mut fallback_fan_ids = HashSet::new();
+
+        let result = record_fallback_incident_for_owned(
+            &owned,
+            &mut config,
+            &mut events,
+            &mut fallback_fan_ids,
+            "ctrl-c shutdown".to_string(),
+        );
+
+        assert_eq!(result.failed.len(), 1);
+        let incident = config.fallback_incident.as_ref().expect("fallback incident");
+        assert_eq!(incident.affected_fans, vec!["fan-1"]);
+        assert!(fallback_fan_ids.contains("fan-1"));
+        assert!(matches!(
+            events.events().last().map(|event| &event.reason),
+            Some(DegradedReason::FallbackActive { affected_fans }) if affected_fans == &vec!["fan-1".to_string()]
+        ));
+    }
+
+    #[test]
+    fn panic_path_uses_same_fallback_recorder() {
+        let mut owned = OwnedFanSet::new();
+        owned.claim_fan(
+            "fan-1",
+            ControlMode::Pwm,
+            "/definitely/missing/pwm1",
+        );
+        let mut config = AppConfig::default();
+        let mut events = LifecycleEventLog::new();
+        let mut fallback_fan_ids = HashSet::new();
+
+        install_panic_fallback_hook(
+            Arc::new(RwLock::new(owned)),
+            Arc::new(RwLock::new(config.clone())),
+            Arc::new(RwLock::new(events.clone())),
+            Arc::new(RwLock::new(fallback_fan_ids.clone())),
+        );
+
+        let result = record_fallback_incident_for_owned(
+            &OwnedFanSet::new(),
+            &mut config,
+            &mut events,
+            &mut fallback_fan_ids,
+            "panic: simulated".to_string(),
+        );
+
+        assert!(result.all_succeeded());
+        assert!(config.fallback_incident.is_some());
+    }
+}

@@ -1106,6 +1106,10 @@ mod tests {
         assert!(owned.owns("hwmon-test-0000000000000001-fan1"));
         assert!(!degraded.has_degraded());
         assert!(!events.is_empty());
+        assert!(matches!(
+            events.events().last().map(|event| &event.reason),
+            Some(DegradedReason::BootReconciled { restored_count: 1 })
+        ));
     }
 
     #[test]
