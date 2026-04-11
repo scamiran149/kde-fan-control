@@ -1599,4 +1599,88 @@ mod tests {
         let final_pwm = fs::read_to_string(fixture.pwm_path()).expect("pwm should be readable");
         assert_eq!(after_release, final_pwm);
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_iface_get_control_status_serializes_live_snapshots() {
+        let fixture = ControlFixture::new();
+        fixture.write_temp("56000\n");
+        fixture.write_pwm_seed("0\n");
+
+        let snapshot = Arc::new(RwLock::new(test_snapshot(fixture.root())));
+        let config = Arc::new(RwLock::new(AppConfig {
+            applied: Some(applied_config_for(
+                "hwmon-test-0000000000000001-fan1",
+                "hwmon-test-0000000000000001-temp1",
+            )),
+            ..AppConfig::default()
+        }));
+        let owned = Arc::new(RwLock::new(OwnedFanSet::new()));
+        owned.write().await.claim_fan(
+            "hwmon-test-0000000000000001-fan1",
+            ControlMode::Pwm,
+            fixture.pwm_path().to_string_lossy().as_ref(),
+        );
+        let degraded = Arc::new(RwLock::new(DegradedState::new()));
+        let supervisor = ControlSupervisor::new(snapshot, config, owned, degraded);
+        supervisor.reconcile().await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        let iface = ControlIface { supervisor };
+        let status = iface
+            .get_control_status()
+            .await
+            .expect("control status should serialize");
+        assert!(status.contains("hwmon-test-0000000000000001-fan1"));
+        assert!(status.contains("aggregated_temp_millidegrees"));
+        assert!(status.contains("mapped_pwm"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_supervisor_reconciles_after_applied_config_changes() {
+        let fixture = ControlFixture::new();
+        fixture.write_temp("56500\n");
+        fixture.write_pwm_seed("0\n");
+
+        let snapshot = Arc::new(RwLock::new(test_snapshot(fixture.root())));
+        let config = Arc::new(RwLock::new(AppConfig::default()));
+        let owned = Arc::new(RwLock::new(OwnedFanSet::new()));
+        owned.write().await.claim_fan(
+            "hwmon-test-0000000000000001-fan1",
+            ControlMode::Pwm,
+            fixture.pwm_path().to_string_lossy().as_ref(),
+        );
+        let degraded = Arc::new(RwLock::new(DegradedState::new()));
+        let supervisor = ControlSupervisor::new(
+            Arc::clone(&snapshot),
+            Arc::clone(&config),
+            Arc::clone(&owned),
+            degraded,
+        );
+
+        supervisor.reconcile().await;
+        assert_eq!(supervisor.status_json().await.expect("status"), "{}");
+
+        {
+            let mut config = config.write().await;
+            config.applied = Some(applied_config_for(
+                "hwmon-test-0000000000000001-fan1",
+                "hwmon-test-0000000000000001-temp1",
+            ));
+        }
+        supervisor.reconcile().await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let started = supervisor.status_json().await.expect("status");
+        assert!(started.contains("hwmon-test-0000000000000001-fan1"));
+
+        {
+            let mut config = config.write().await;
+            config.applied = Some(AppliedConfig {
+                fans: HashMap::new(),
+                applied_at: Some("2026-04-11T12:05:00Z".to_string()),
+            });
+        }
+        supervisor.reconcile().await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(supervisor.status_json().await.expect("status"), "{}");
+    }
 }
