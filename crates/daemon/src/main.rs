@@ -930,17 +930,21 @@ struct LifecycleIface {
 fn release_removed_owned_fans(
     owned: &mut OwnedFanSet,
     next_owned: &std::collections::HashSet<String>,
-) {
+) -> Vec<(String, String)> {
+    let mut failures = Vec::new();
     for fan_id in owned
         .owned_fan_ids()
         .map(str::to_string)
         .collect::<Vec<_>>()
     {
         if !next_owned.contains(&fan_id) {
-            let _ = kde_fan_control_core::lifecycle::write_fallback_single(&fan_id, owned);
-            owned.release_fan(&fan_id);
+            match kde_fan_control_core::lifecycle::write_fallback_single(&fan_id, owned) {
+                Ok(()) => owned.release_fan(&fan_id),
+                Err(error) => failures.push((fan_id.clone(), error)),
+            }
         }
     }
+    failures
 }
 
 struct ControlIface {
@@ -1325,7 +1329,22 @@ impl LifecycleIface {
             apply_draft(&draft, &snapshot, timestamp)
         };
 
-        let had_rejections = !result.rejected.is_empty();
+        let mut had_rejections = !result.rejected.is_empty();
+
+        // Persist first. This is the commit point: runtime ownership and task
+        // orchestration changes happen only after the new applied config is
+        // durably saved.
+        {
+            let mut config = self.config.write().await;
+            let previous_applied = config.applied.clone();
+            config.set_applied(applied.clone());
+            config.clear_fallback_incident();
+            if let Err(error) = config.save() {
+                config.applied = previous_applied;
+                return Err(fdo::Error::Failed(format!("config save error: {error}")));
+            }
+        }
+        self.fallback_fan_ids.write().await.clear();
 
         self.control.stop_all().await;
 
@@ -1367,9 +1386,28 @@ impl LifecycleIface {
         {
             let snapshot = self.snapshot.read().await;
             let mut owned = self.owned.write().await;
-            let next_owned: std::collections::HashSet<_> =
-                result.enrollable.iter().cloned().collect();
-            release_removed_owned_fans(&mut owned, &next_owned);
+            let next_owned: std::collections::HashSet<_> = result.enrollable.iter().cloned().collect();
+            let release_failures = release_removed_owned_fans(&mut owned, &next_owned);
+            if !release_failures.is_empty() {
+                had_rejections = true;
+                let mut degraded = self.degraded.write().await;
+                let mut events = self.events.write().await;
+                for (fan_id, error) in release_failures {
+                    let reason = DegradedReason::FanNoLongerEnrollable {
+                        fan_id: fan_id.clone(),
+                        support_state: kde_fan_control_core::inventory::SupportState::Unavailable,
+                        reason: format!("failed to release fan safely: {error}"),
+                    };
+                    degraded.mark_degraded(fan_id.clone(), vec![reason.clone()]);
+                    events.push(LifecycleEvent {
+                        timestamp: format_iso8601_now(),
+                        reason,
+                        detail: Some(format!(
+                            "apply draft could not release {fan_id} safely; ownership retained"
+                        )),
+                    });
+                }
+            }
             for fan_id in &result.enrollable {
                 // Find the fan's sysfs path from the current inventory.
                 let fan = snapshot
@@ -1396,16 +1434,6 @@ impl LifecycleIface {
             }
         }
 
-        // Persist the applied config.
-        {
-            let mut config = self.config.write().await;
-            config.set_applied(applied);
-            config.clear_fallback_incident();
-            config
-                .save()
-                .map_err(|e| fdo::Error::Failed(format!("config save error: {e}")))?;
-        }
-        self.fallback_fan_ids.write().await.clear();
         self.control.reconcile().await;
 
         // Emit signals.
@@ -2426,15 +2454,35 @@ mod tests {
 
     #[test]
     fn release_removed_owned_fans_drops_fans_not_in_next_applied_set() {
+        let fixture = ControlFixture::new();
+        fixture.write_pwm_seed("0\n");
+
         let mut owned = OwnedFanSet::new();
-        owned.claim_fan("fan-a", ControlMode::Pwm, "/sys/class/hwmon/hwmon0/pwm1");
+        owned.claim_fan(
+            "fan-a",
+            ControlMode::Pwm,
+            fixture.pwm_path().to_string_lossy().as_ref(),
+        );
         owned.claim_fan("fan-b", ControlMode::Pwm, "/sys/class/hwmon/hwmon0/pwm2");
 
         let next_owned = HashSet::from(["fan-b".to_string()]);
-        release_removed_owned_fans(&mut owned, &next_owned);
+        let failures = release_removed_owned_fans(&mut owned, &next_owned);
 
+        assert!(failures.is_empty());
         assert!(!owned.owns("fan-a"));
         assert!(owned.owns("fan-b"));
+    }
+
+    #[test]
+    fn release_removed_owned_fans_keeps_ownership_on_fallback_failure() {
+        let mut owned = OwnedFanSet::new();
+        owned.claim_fan("fan-a", ControlMode::Pwm, "/definitely/missing/pwm1");
+
+        let next_owned = HashSet::new();
+        let failures = release_removed_owned_fans(&mut owned, &next_owned);
+
+        assert_eq!(failures.len(), 1);
+        assert!(owned.owns("fan-a"));
     }
 
     async fn auto_tune_test_harness(
