@@ -306,7 +306,134 @@ impl OwnedFanSet {
 }
 
 // ---------------------------------------------------------------------------
-// Fallback lifecycle
+// Fallback lifecycle — safe-maximum fan output on daemon failure or shutdown
+// ---------------------------------------------------------------------------
+
+/// Safe maximum PWM value used as fallback.
+pub const PWM_SAFE_MAX: u32 = 255;
+
+/// Manual PWM enable value — sets fan to manual control mode.
+pub const PWM_ENABLE_MANUAL: u32 = 1;
+
+/// Result of attempting to write safe-maximum values for owned fans.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FallbackResult {
+    /// Fans successfully driven to safe maximum.
+    pub succeeded: Vec<String>,
+
+    /// Fans where fallback write failed, with errors.
+    pub failed: Vec<(String, String)>,
+}
+
+impl FallbackResult {
+    /// Whether all fallback writes succeeded.
+    pub fn all_succeeded(&self) -> bool {
+        self.failed.is_empty()
+    }
+}
+
+/// Try to write safe-maximum output to all owned fans.
+///
+/// For each owned fan, this writes:
+/// 1. `pwm{N}_enable` = 1 (manual mode) to take control from BIOS
+/// 2. `pwm{N}` = 255 (maximum speed) to drive the fan to full cooling
+///
+/// This is the crash-path safety mechanism: if the daemon is shutting down
+/// or has encountered a failure, it must drive all owned fans to safe maximum
+/// so they don't get stuck at a low speed.
+///
+/// **IMPORTANT:** Only fans in the `OwnedFanSet` receive fallback writes.
+/// Unmanaged fans are never written to.
+pub fn write_fallback_for_owned(owned: &OwnedFanSet) -> FallbackResult {
+    let mut succeeded = Vec::new();
+    let mut failed = Vec::new();
+
+    for fan_id in owned.owned_fan_ids() {
+        let pwm_path = match owned.sysfs_path(fan_id) {
+            Some(path) => path.to_string(),
+            None => {
+                failed.push((
+                    fan_id.to_string(),
+                    "no sysfs path recorded for owned fan".into(),
+                ));
+                continue;
+            }
+        };
+
+        // The pwm path is like /sys/class/hwmon/hwmon0/pwm1
+        // Derive the pwm_enable path from it.
+        let pwm_enable_path = format!("{}_enable", pwm_path);
+
+        // Step 1: Write pwm_enable = 1 (manual mode)
+        if let Err(e) = std::fs::write(&pwm_enable_path, PWM_ENABLE_MANUAL.to_string()) {
+            // Even if we can't set the enable mode, try to write the pwm value.
+            // Some systems accept direct pwm writes without enable changes.
+            tracing::warn!(
+                fan_id = fan_id,
+                path = %pwm_enable_path,
+                error = %e,
+                "could not set pwm_enable to manual mode during fallback"
+            );
+        }
+
+        // Step 2: Write pwm = 255 (safe maximum)
+        match std::fs::write(&pwm_path, PWM_SAFE_MAX.to_string()) {
+            Ok(()) => {
+                tracing::info!(
+                    fan_id = fan_id,
+                    pwm_path = %pwm_path,
+                    "fallback: set fan to safe maximum (pwm=255)"
+                );
+                succeeded.push(fan_id.to_string());
+            }
+            Err(e) => {
+                tracing::error!(
+                    fan_id = fan_id,
+                    pwm_path = %pwm_path,
+                    error = %e,
+                    "fallback: FAILED to set fan to safe maximum"
+                );
+                failed.push((fan_id.to_string(), format!("pwm write failed: {e}")));
+            }
+        }
+    }
+
+    FallbackResult { succeeded, failed }
+}
+
+/// Write fallback for a single fan (used for targeted fallback when a fan
+/// needs to be released from management). Only writes if the fan is in the
+/// owned set.
+pub fn write_fallback_single(fan_id: &str, owned: &OwnedFanSet) -> Result<(), String> {
+    if !owned.owns(fan_id) {
+        // Not owned — no fallback write. This is correct behavior.
+        return Ok(());
+    }
+
+    let pwm_path = match owned.sysfs_path(fan_id) {
+        Some(path) => path.to_string(),
+        None => return Err("no sysfs path recorded for owned fan".into()),
+    };
+
+    let pwm_enable_path = format!("{}_enable", pwm_path);
+
+    // Set manual mode
+    if let Err(e) = std::fs::write(&pwm_enable_path, PWM_ENABLE_MANUAL.to_string()) {
+        tracing::warn!(
+            fan_id = fan_id,
+            path = %pwm_enable_path,
+            error = %e,
+            "could not set pwm_enable to manual mode during single-fan fallback"
+        );
+    }
+
+    // Write safe maximum
+    std::fs::write(&pwm_path, PWM_SAFE_MAX.to_string())
+        .map_err(|e| format!("pwm write failed for {fan_id}: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// Runtime status model (inspectable via DBus)
 // ---------------------------------------------------------------------------
 
 /// Per-fan runtime status for the DBus status model.
@@ -394,20 +521,6 @@ impl RuntimeState {
             owned_fans,
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Fallback fan writes
-// ---------------------------------------------------------------------------
-
-/// Result of attempting to write safe-maximum values for owned fans.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FallbackResult {
-    /// Fans successfully driven to safe maximum.
-    pub succeeded: Vec<String>,
-
-    /// Fans where fallback write failed, with errors.
-    pub failed: Vec<(String, String)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -720,12 +833,10 @@ mod tests {
         }
 
         // Reconciled config should contain the fan.
-        assert!(
-            result
-                .reconciled_config
-                .fans
-                .contains_key("hwmon-test-0000000000000001-fan1")
-        );
+        assert!(result
+            .reconciled_config
+            .fans
+            .contains_key("hwmon-test-0000000000000001-fan1"));
     }
 
     #[test]
@@ -884,18 +995,14 @@ mod tests {
         assert_eq!(result.degraded_reasons.len(), 1);
 
         // Reconciled config should only have the real fan.
-        assert!(
-            result
-                .reconciled_config
-                .fans
-                .contains_key("hwmon-test-0000000000000001-fan1")
-        );
-        assert!(
-            !result
-                .reconciled_config
-                .fans
-                .contains_key("hwmon-ghost-0000000000000003-fan1")
-        );
+        assert!(result
+            .reconciled_config
+            .fans
+            .contains_key("hwmon-test-0000000000000001-fan1"));
+        assert!(!result
+            .reconciled_config
+            .fans
+            .contains_key("hwmon-ghost-0000000000000003-fan1"));
     }
 
     // --- Ownership tests ---
@@ -1065,11 +1172,9 @@ mod tests {
             }
             _ => panic!("expected Managed status for fan1"),
         }
-        assert!(
-            state
-                .owned_fans
-                .contains(&"hwmon-test-0000000000000001-fan1".to_string())
-        );
+        assert!(state
+            .owned_fans
+            .contains(&"hwmon-test-0000000000000001-fan1".to_string()));
     }
 
     #[test]
