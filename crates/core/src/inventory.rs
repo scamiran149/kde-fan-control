@@ -130,17 +130,13 @@ fn build_fan_channel(hwmon_path: &Path, device_id: &str, channel: u32) -> io::Re
     let fan_input_path = hwmon_path.join(format!("fan{channel}_input"));
     let pwm_path = hwmon_path.join(format!("pwm{channel}"));
     let pwm_enable_path = hwmon_path.join(format!("pwm{channel}_enable"));
+    let pwm_mode_path = hwmon_path.join(format!("pwm{channel}_mode"));
 
     let rpm_feedback = fan_input_path.exists();
     let has_pwm_node = pwm_path.exists();
     let pwm_writable = has_pwm_node && is_writable(&pwm_path)?;
     let pwm_enable_writable = pwm_enable_path.exists() && is_writable(&pwm_enable_path)?;
-
-    let control_modes = if pwm_writable {
-        vec![ControlMode::Pwm]
-    } else {
-        Vec::new()
-    };
+    let control_modes = detect_control_modes(&pwm_path, &pwm_mode_path, pwm_writable)?;
 
     let (support_state, support_reason) = if pwm_writable {
         (SupportState::Available, None)
@@ -176,6 +172,29 @@ fn build_fan_channel(hwmon_path: &Path, device_id: &str, channel: u32) -> io::Re
         support_state,
         support_reason,
     })
+}
+
+fn detect_control_modes(
+    pwm_path: &Path,
+    pwm_mode_path: &Path,
+    pwm_writable: bool,
+) -> io::Result<Vec<ControlMode>> {
+    if !pwm_writable {
+        return Ok(Vec::new());
+    }
+
+    let mut control_modes = vec![ControlMode::Pwm];
+
+    // In hwmon, pwmN remains the writable output value even when the controller can drive
+    // the fan in direct-current mode. A writable pwmN_mode file is therefore the concrete,
+    // kernel-advertised proof that userspace can safely switch between PWM and voltage-style
+    // control for this channel. If the selector is absent or read-only, we keep the channel
+    // PWM-only instead of guessing from board-specific naming.
+    if pwm_path.exists() && pwm_mode_path.exists() && is_writable(pwm_mode_path)? {
+        control_modes.push(ControlMode::Voltage);
+    }
+
+    Ok(control_modes)
 }
 
 fn collect_channel_numbers(
