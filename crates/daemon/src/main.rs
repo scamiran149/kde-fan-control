@@ -837,18 +837,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // If any fans were restored successfully, replace the applied config
-        // with the reconciled subset and persist it.
+        // with the reconciled subset and persist it. A successful boot restore
+        // supersedes any previously persisted fallback incident: the fallback
+        // remains visible in lifecycle history, but the current runtime state
+        // should return to managed rather than stay latched in FALLBACK.
         if !result.restored.is_empty() {
             let reconciled_config = result.reconciled_config.clone();
             drop(config_guard);
             let mut config_mut = config.write().await;
             config_mut.set_applied(reconciled_config);
+            config_mut.clear_fallback_incident();
             if let Err(e) = config_mut.save() {
                 tracing::error!(error = %e, "failed to persist reconciled config after boot");
             } else {
                 tracing::info!("persisted reconciled applied config");
             }
             drop(config_mut);
+
+            fallback_fan_ids.write().await.clear();
         }
     }
 
