@@ -1,18 +1,25 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
 use kde_fan_control_core::config::{
-    AppConfig, DegradedReason, DegradedState, DraftFanEntry, LifecycleEvent, LifecycleEventLog,
-    apply_draft, validate_draft,
+    AppConfig, AppliedFanEntry, DegradedReason, DegradedState, DraftFanEntry, LifecycleEvent,
+    LifecycleEventLog, apply_draft, validate_draft,
+};
+use kde_fan_control_core::control::{
+    PidController, map_output_percent_to_pwm, startup_kick_required,
 };
 use kde_fan_control_core::inventory::{ControlMode, InventorySnapshot, discover, discover_from};
 use kde_fan_control_core::lifecycle::{
-    FallbackResult, OwnedFanSet, RuntimeState, lifecycle_event_from_fallback_incident,
-    perform_boot_reconciliation, write_fallback_for_owned,
+    ControlRuntimeSnapshot, FallbackResult, OwnedFanSet, RuntimeState,
+    lifecycle_event_from_fallback_incident, perform_boot_reconciliation, write_fallback_for_owned,
 };
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
+use tokio::time::{MissedTickBehavior, interval};
 use tracing_subscriber::EnvFilter;
 use zbus::fdo;
 use zbus::{connection::Builder, interface, object_server::SignalEmitter};
@@ -22,23 +29,301 @@ const BUS_PATH_INVENTORY: &str = "/org/kde/FanControl";
 const BUS_PATH_LIFECYCLE: &str = "/org/kde/FanControl/Lifecycle";
 const BUS_PATH_CONTROL: &str = "/org/kde/FanControl/Control";
 
-struct ControlSupervisor;
+#[derive(Debug)]
+struct ControlTaskHandle {
+    handle: JoinHandle<()>,
+}
+
+#[derive(Debug)]
+struct ControlSupervisorInner {
+    snapshot: Arc<RwLock<InventorySnapshot>>,
+    config: Arc<RwLock<AppConfig>>,
+    owned: Arc<RwLock<OwnedFanSet>>,
+    degraded: Arc<RwLock<DegradedState>>,
+    tasks: RwLock<HashMap<String, ControlTaskHandle>>,
+    status: RwLock<HashMap<String, ControlRuntimeSnapshot>>,
+}
+
+#[derive(Clone, Debug)]
+struct ControlSupervisor {
+    inner: Arc<ControlSupervisorInner>,
+}
 
 impl ControlSupervisor {
     fn new(
-        _snapshot: Arc<RwLock<InventorySnapshot>>,
-        _config: Arc<RwLock<AppConfig>>,
-        _owned: Arc<RwLock<OwnedFanSet>>,
-        _degraded: Arc<RwLock<DegradedState>>,
+        snapshot: Arc<RwLock<InventorySnapshot>>,
+        config: Arc<RwLock<AppConfig>>,
+        owned: Arc<RwLock<OwnedFanSet>>,
+        degraded: Arc<RwLock<DegradedState>>,
     ) -> Self {
-        Self
+        Self {
+            inner: Arc::new(ControlSupervisorInner {
+                snapshot,
+                config,
+                owned,
+                degraded,
+                tasks: RwLock::new(HashMap::new()),
+                status: RwLock::new(HashMap::new()),
+            }),
+        }
     }
 
-    async fn reconcile(&self) {}
+    async fn reconcile(&self) {
+        let desired = {
+            let config = self.inner.config.read().await;
+            let owned = self.inner.owned.read().await;
+            config
+                .applied
+                .as_ref()
+                .map(|applied| {
+                    applied
+                        .fans
+                        .iter()
+                        .filter(|(fan_id, _)| owned.owns(fan_id))
+                        .map(|(fan_id, entry)| (fan_id.clone(), entry.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+
+        {
+            let mut tasks = self.inner.tasks.write().await;
+            for (_, task) in tasks.drain() {
+                task.handle.abort();
+            }
+        }
+        self.inner.status.write().await.clear();
+
+        for (fan_id, entry) in desired {
+            self.inner.degraded.write().await.clear_fan(&fan_id);
+            self.inner
+                .status
+                .write()
+                .await
+                .insert(fan_id.clone(), control_snapshot_from_applied(&entry));
+
+            let supervisor = self.clone();
+            let fan_id_for_task = fan_id.clone();
+            let handle = tokio::spawn(async move {
+                supervisor.run_fan_loop(fan_id_for_task, entry).await;
+            });
+
+            self.inner
+                .tasks
+                .write()
+                .await
+                .insert(fan_id, ControlTaskHandle { handle });
+        }
+    }
 
     async fn status_json(&self) -> Result<String, serde_json::Error> {
-        serde_json::to_string(&std::collections::HashMap::<String, String>::new())
+        let status = self.inner.status.read().await;
+        serde_json::to_string(&*status)
     }
+
+    async fn run_fan_loop(&self, fan_id: String, entry: AppliedFanEntry) {
+        let pwm_path = match self.inner.owned.read().await.sysfs_path(&fan_id) {
+            Some(path) => path.to_string(),
+            None => {
+                self.clear_status(&fan_id).await;
+                return;
+            }
+        };
+
+        let mut sample_interval = interval(Duration::from_millis(entry.cadence.sample_interval_ms));
+        let mut control_interval =
+            interval(Duration::from_millis(entry.cadence.control_interval_ms));
+        let mut write_interval = interval(Duration::from_millis(entry.cadence.write_interval_ms));
+        sample_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        control_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        write_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        let mut controller = PidController::new(
+            entry.target_temp_millidegrees,
+            entry.pid_gains,
+            entry.pid_limits,
+            entry.deadband_millidegrees,
+        );
+        let mut latest_aggregated_temp = None;
+        let mut latest_output_percent = None;
+        let mut latest_pwm = None;
+        let mut last_written_percent = None;
+
+        loop {
+            tokio::select! {
+                _ = sample_interval.tick() => {
+                    match self.sample_temperatures(&fan_id, &entry).await {
+                        Ok(aggregated_temp) => {
+                            latest_aggregated_temp = Some(aggregated_temp);
+                            self.update_status(&fan_id, |status| {
+                                status.aggregated_temp_millidegrees = Some(aggregated_temp);
+                                status.alert_high_temp = aggregated_temp >= status.target_temp_millidegrees + 5_000;
+                            }).await;
+                        }
+                        Err(reason) => {
+                            self.degrade_and_stop(&fan_id, reason).await;
+                            break;
+                        }
+                    }
+                }
+                _ = control_interval.tick() => {
+                    if let Some(aggregated_temp) = latest_aggregated_temp {
+                        let output = controller.update(
+                            aggregated_temp,
+                            entry.cadence.control_interval_ms as f64 / 1_000.0,
+                        );
+                        latest_output_percent = Some(output.logical_output_percent);
+                        self.update_status(&fan_id, |status| {
+                            status.aggregated_temp_millidegrees = Some(aggregated_temp);
+                            status.logical_output_percent = Some(output.logical_output_percent);
+                            status.last_error_millidegrees = Some(output.error_millidegrees.round() as i64);
+                            status.alert_high_temp = aggregated_temp >= status.target_temp_millidegrees + 5_000;
+                        }).await;
+                    }
+                }
+                _ = write_interval.tick() => {
+                    if !self.inner.owned.read().await.owns(&fan_id) {
+                        self.clear_status(&fan_id).await;
+                        break;
+                    }
+
+                    let Some(output_percent) = latest_output_percent else {
+                        continue;
+                    };
+
+                    if startup_kick_required(last_written_percent, output_percent) {
+                        let kick_percent = entry
+                            .actuator_policy
+                            .startup_kick_percent
+                            .max(output_percent);
+                        let kick_pwm = map_output_percent_to_pwm(kick_percent, &entry.actuator_policy);
+                        if let Err(error) = write_pwm_value(&pwm_path, kick_pwm) {
+                            tracing::warn!(fan_id = %fan_id, path = %pwm_path, error = %error, "failed startup-kick pwm write");
+                        }
+                        tokio::time::sleep(Duration::from_millis(entry.actuator_policy.startup_kick_ms)).await;
+                    }
+
+                    let mapped_pwm = map_output_percent_to_pwm(output_percent, &entry.actuator_policy);
+                    match write_pwm_value(&pwm_path, mapped_pwm) {
+                        Ok(()) => {
+                            latest_pwm = Some(mapped_pwm);
+                            last_written_percent = Some(output_percent);
+                            self.update_status(&fan_id, |status| {
+                                status.logical_output_percent = Some(output_percent);
+                                status.mapped_pwm = Some(mapped_pwm);
+                            }).await;
+                        }
+                        Err(error) => {
+                            tracing::warn!(fan_id = %fan_id, path = %pwm_path, error = %error, "failed pwm control write");
+                        }
+                    }
+                }
+            }
+        }
+
+        let _ = latest_pwm;
+    }
+
+    async fn sample_temperatures(
+        &self,
+        fan_id: &str,
+        entry: &AppliedFanEntry,
+    ) -> Result<i64, DegradedReason> {
+        let resolved_sources = {
+            let snapshot = self.inner.snapshot.read().await;
+            resolve_temp_sources(&snapshot, &entry.temp_sources)
+        };
+
+        let mut readings = Vec::new();
+        let mut first_missing = entry
+            .temp_sources
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "unknown-temp".to_string());
+
+        for (temp_id, path) in resolved_sources {
+            first_missing = temp_id.clone();
+            match fs::read_to_string(&path)
+                .ok()
+                .and_then(|value| value.trim().parse::<i64>().ok())
+            {
+                Some(reading) => readings.push(reading),
+                None => {
+                    tracing::warn!(fan_id = %fan_id, temp_id = %temp_id, path = %path.display(), "failed to read live temperature input");
+                }
+            }
+        }
+
+        entry
+            .aggregation
+            .compute_millidegrees(&readings)
+            .ok_or_else(|| DegradedReason::TempSourceMissing {
+                fan_id: fan_id.to_string(),
+                temp_id: first_missing,
+            })
+    }
+
+    async fn update_status<F>(&self, fan_id: &str, update: F)
+    where
+        F: FnOnce(&mut ControlRuntimeSnapshot),
+    {
+        let mut status = self.inner.status.write().await;
+        if let Some(snapshot) = status.get_mut(fan_id) {
+            update(snapshot);
+        }
+    }
+
+    async fn clear_status(&self, fan_id: &str) {
+        self.inner.status.write().await.remove(fan_id);
+        self.inner.tasks.write().await.remove(fan_id);
+    }
+
+    async fn degrade_and_stop(&self, fan_id: &str, reason: DegradedReason) {
+        self.inner
+            .degraded
+            .write()
+            .await
+            .mark_degraded(fan_id.to_string(), vec![reason]);
+        self.clear_status(fan_id).await;
+    }
+}
+
+fn control_snapshot_from_applied(entry: &AppliedFanEntry) -> ControlRuntimeSnapshot {
+    ControlRuntimeSnapshot {
+        sensor_ids: entry.temp_sources.clone(),
+        aggregation: entry.aggregation,
+        target_temp_millidegrees: entry.target_temp_millidegrees,
+        aggregated_temp_millidegrees: None,
+        logical_output_percent: None,
+        mapped_pwm: None,
+        auto_tuning: false,
+        alert_high_temp: false,
+        last_error_millidegrees: None,
+    }
+}
+
+fn resolve_temp_sources(snapshot: &InventorySnapshot, temp_sources: &[String]) -> Vec<(String, PathBuf)> {
+    temp_sources
+        .iter()
+        .filter_map(|temp_id| {
+            snapshot.devices.iter().find_map(|device| {
+                device.temperatures.iter().find(|sensor| &sensor.id == temp_id).map(|sensor| {
+                    (
+                        temp_id.clone(),
+                        PathBuf::from(&device.sysfs_path).join(format!("temp{}_input", sensor.channel)),
+                    )
+                })
+            })
+        })
+        .collect()
+}
+
+fn write_pwm_value(pwm_path: &str, pwm_value: u16) -> std::io::Result<()> {
+    let pwm_enable_path = format!("{}_enable", pwm_path);
+    if let Err(error) = fs::write(&pwm_enable_path, kde_fan_control_core::lifecycle::PWM_ENABLE_MANUAL.to_string()) {
+        tracing::warn!(path = %pwm_enable_path, error = %error, "failed to set pwm channel to manual mode before write");
+    }
+    fs::write(pwm_path, pwm_value.to_string())
 }
 
 #[derive(Parser)]
@@ -201,6 +486,24 @@ struct LifecycleIface {
     events: Arc<RwLock<LifecycleEventLog>>,
     owned: Arc<RwLock<OwnedFanSet>>,
     fallback_fan_ids: Arc<RwLock<HashSet<String>>>,
+    control: ControlSupervisor,
+}
+
+struct ControlIface {
+    supervisor: ControlSupervisor,
+}
+
+#[interface(name = "org.kde.FanControl.Control")]
+impl ControlIface {
+    async fn get_control_status(&self) -> fdo::Result<String> {
+        self.supervisor
+            .status_json()
+            .await
+            .map_err(|e| fdo::Error::Failed(format!("control status serialization error: {e}")))
+    }
+
+    #[zbus(signal)]
+    async fn control_status_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 #[interface(name = "org.kde.FanControl.Lifecycle")]
@@ -482,6 +785,7 @@ impl LifecycleIface {
                 .map_err(|e| fdo::Error::Failed(format!("config save error: {e}")))?;
         }
         self.fallback_fan_ids.write().await.clear();
+        self.control.reconcile().await;
 
         // Emit signals.
         if let Err(e) = emitter.draft_changed().await {
@@ -508,6 +812,7 @@ impl LifecycleIface {
         {
             tracing::warn!(error = %e, "failed to emit LifecycleEventAppended signal");
         }
+        emit_control_status_changed(connection).await;
 
         serde_json::to_string(&result)
             .map_err(|e| fdo::Error::Failed(format!("validation serialization error: {e}")))
@@ -605,6 +910,23 @@ fn validation_error_to_degraded_reason(
                 support_state: kde_fan_control_core::inventory::SupportState::Unavailable,
                 reason: error.to_string(),
             }
+        }
+    }
+}
+
+async fn emit_control_status_changed(connection: &zbus::Connection) {
+    match connection
+        .object_server()
+        .interface::<_, ControlIface>(BUS_PATH_CONTROL)
+        .await
+    {
+        Ok(iface_ref) => {
+            if let Err(error) = iface_ref.control_status_changed().await {
+                tracing::warn!(error = %error, "failed to emit ControlStatusChanged signal");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to access ControlIface for signal emission");
         }
     }
 }
@@ -820,6 +1142,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let events = Arc::new(RwLock::new(LifecycleEventLog::new()));
     let owned = Arc::new(RwLock::new(OwnedFanSet::new()));
     let fallback_fan_ids = Arc::new(RwLock::new(persisted_fallback_fan_ids));
+    let control = ControlSupervisor::new(
+        Arc::clone(&snapshot),
+        Arc::clone(&config),
+        Arc::clone(&owned),
+        Arc::clone(&degraded),
+    );
 
     install_panic_fallback_hook(
         Arc::clone(&owned),
@@ -896,6 +1224,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    control.reconcile().await;
+
     let inventory_iface = InventoryIface {
         snapshot: Arc::clone(&snapshot),
         config: Arc::clone(&config),
@@ -908,6 +1238,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         events: Arc::clone(&events),
         owned: Arc::clone(&owned),
         fallback_fan_ids: Arc::clone(&fallback_fan_ids),
+        control: control.clone(),
+    };
+
+    let control_iface = ControlIface {
+        supervisor: control.clone(),
     };
 
     let builder = if args.session_bus {
@@ -920,6 +1255,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .name(BUS_NAME)?
         .serve_at(BUS_PATH_INVENTORY, inventory_iface)?
         .serve_at(BUS_PATH_LIFECYCLE, lifecycle_iface)?
+        .serve_at(BUS_PATH_CONTROL, control_iface)?
         .build()
         .await?;
 
