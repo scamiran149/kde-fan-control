@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -7,6 +8,10 @@ use kde_fan_control_core::config::{
     apply_draft, validate_draft,
 };
 use kde_fan_control_core::inventory::{ControlMode, InventorySnapshot, discover, discover_from};
+use kde_fan_control_core::lifecycle::{
+    FallbackResult, OwnedFanSet, RuntimeState, perform_boot_reconciliation,
+    write_fallback_for_owned,
+};
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 use zbus::fdo;
@@ -166,7 +171,7 @@ impl InventoryIface {
 }
 
 // ---------------------------------------------------------------------------
-// Lifecycle interface (draft/apply, degraded state, events)
+// Lifecycle interface (draft/apply, degraded state, events, runtime state)
 // ---------------------------------------------------------------------------
 
 struct LifecycleIface {
@@ -174,6 +179,8 @@ struct LifecycleIface {
     snapshot: Arc<RwLock<InventorySnapshot>>,
     degraded: Arc<RwLock<DegradedState>>,
     events: Arc<RwLock<LifecycleEventLog>>,
+    owned: Arc<RwLock<OwnedFanSet>>,
+    fallback_fan_ids: Arc<RwLock<HashSet<String>>>,
 }
 
 #[interface(name = "org.kde.FanControl.Lifecycle")]
@@ -209,6 +216,37 @@ impl LifecycleIface {
         let events = self.events.read().await;
         serde_json::to_string(events.events())
             .map_err(|e| fdo::Error::Failed(format!("events serialization error: {e}")))
+    }
+
+    /// Return the current runtime state as a JSON string.
+    /// Shows which fans are managed, degraded, in fallback, or unmanaged.
+    async fn get_runtime_state(&self) -> fdo::Result<String> {
+        let (owned_guard, config_guard, snapshot_guard, degraded_guard, fallback_guard) = {
+            let owned = self.owned.read().await;
+            let config = self.config.read().await;
+            let snapshot = self.snapshot.read().await;
+            let degraded = self.degraded.read().await;
+            let fallback_fan_ids = self.fallback_fan_ids.read().await;
+            (
+                owned.clone(),
+                config.applied.clone(),
+                snapshot.clone(),
+                degraded.clone(),
+                fallback_fan_ids.clone(),
+            )
+            // All guards dropped here
+        };
+
+        let state = RuntimeState::build(
+            &owned_guard,
+            config_guard.as_ref(),
+            &degraded_guard,
+            &fallback_guard,
+            &snapshot_guard,
+        );
+
+        serde_json::to_string(&state)
+            .map_err(|e| fdo::Error::Failed(format!("runtime state serialization error: {e}")))
     }
 
     // -------------------------------------------------------------------
@@ -321,9 +359,8 @@ impl LifecycleIface {
 
     /// Apply the current draft configuration.
     /// Validates the draft against live inventory, promotes passing fans
-    /// to applied config, and reports any rejected fans.
-    /// Emits DraftChanged, AppliedConfigChanged, and LifecycleEventAppended
-    /// signals on success.
+    /// to applied config, claims them in the owned set, and reports any
+    /// rejected fans. Emits appropriate signals on completion.
     async fn apply_draft(
         &self,
         #[zbus(connection)] connection: &zbus::Connection,
@@ -374,6 +411,37 @@ impl LifecycleIface {
                     },
                     detail: Some("partial apply during draft promotion".into()),
                 });
+            }
+        }
+
+        // Claim successfully applied fans in the owned set and clear
+        // degraded state for fans that passed validation.
+        {
+            let snapshot = self.snapshot.read().await;
+            let mut owned = self.owned.write().await;
+            for fan_id in &result.enrollable {
+                // Find the fan's sysfs path from the current inventory.
+                let fan = snapshot
+                    .devices
+                    .iter()
+                    .flat_map(|d| d.fans.iter())
+                    .find(|f| f.id == *fan_id);
+                if let Some(fan) = fan {
+                    let device = snapshot
+                        .devices
+                        .iter()
+                        .find(|d| d.fans.iter().any(|f| f.id == *fan_id));
+                    let sysfs_path = device
+                        .map(|d| format!("{}/pwm{}", d.sysfs_path, fan.channel))
+                        .unwrap_or_default();
+
+                    // Find the applied entry to get the control mode.
+                    if let Some(applied_entry) = applied.fans.get(fan_id) {
+                        owned.claim_fan(fan_id, applied_entry.control_mode, &sysfs_path);
+                    }
+                }
+                // Clear degraded state for this fan.
+                self.degraded.write().await.clear_fan(fan_id);
             }
         }
 
@@ -580,10 +648,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Shared state.
     let snapshot = Arc::new(RwLock::new(initial));
     let config = Arc::new(RwLock::new(config));
     let degraded = Arc::new(RwLock::new(DegradedState::new()));
     let events = Arc::new(RwLock::new(LifecycleEventLog::new()));
+    let owned = Arc::new(RwLock::new(OwnedFanSet::new()));
+    let fallback_fan_ids = Arc::new(RwLock::new(HashSet::<String>::new()));
+
+    // -----------------------------------------------------------------------
+    // Boot reconciliation: restore managed fans from applied config
+    // -----------------------------------------------------------------------
+    {
+        let config_guard = config.read().await;
+        let snapshot_guard = snapshot.read().await;
+        let mut owned_guard = owned.write().await;
+        let mut degraded_guard = degraded.write().await;
+        let mut events_guard = events.write().await;
+
+        let result = perform_boot_reconciliation(
+            config_guard.applied.as_ref(),
+            &snapshot_guard,
+            &mut owned_guard,
+            &mut degraded_guard,
+            &mut events_guard,
+        );
+
+        tracing::info!(
+            restored = result.restored.len(),
+            skipped = result.skipped.len(),
+            "boot reconciliation complete"
+        );
+
+        for outcome in &result.restored {
+            if let kde_fan_control_core::lifecycle::ReconcileOutcome::Restored { fan_id, .. } =
+                outcome
+            {
+                tracing::info!(fan_id = %fan_id, "restored managed fan on boot");
+            }
+        }
+
+        for outcome in &result.skipped {
+            tracing::warn!(outcome = ?outcome, "skipped fan during boot reconciliation");
+        }
+
+        // If any fans were restored successfully, replace the applied config
+        // with the reconciled subset and persist it.
+        if !result.restored.is_empty() {
+            let reconciled_config = result.reconciled_config.clone();
+            drop(config_guard);
+            let mut config_mut = config.write().await;
+            config_mut.set_applied(reconciled_config);
+            if let Err(e) = config_mut.save() {
+                tracing::error!(error = %e, "failed to persist reconciled config after boot");
+            } else {
+                tracing::info!("persisted reconciled applied config");
+            }
+            drop(config_mut);
+        }
+    }
 
     let inventory_iface = InventoryIface {
         snapshot: Arc::clone(&snapshot),
@@ -595,6 +718,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         snapshot: Arc::clone(&snapshot),
         degraded: Arc::clone(&degraded),
         events: Arc::clone(&events),
+        owned: Arc::clone(&owned),
+        fallback_fan_ids: Arc::clone(&fallback_fan_ids),
     };
 
     let builder = if args.session_bus {
@@ -615,8 +740,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "D-Bus inventory and lifecycle surfaces ready"
     );
 
+    // Wait for shutdown signal, then drive fallback for owned fans.
     tokio::signal::ctrl_c().await?;
-    tracing::info!("shutting down");
+    tracing::info!("shutting down — driving owned fans to safe maximum");
 
+    // -----------------------------------------------------------------------
+    // Fallback: drive all owned fans to safe maximum before exit
+    // -----------------------------------------------------------------------
+    {
+        let owned_guard = owned.read().await;
+        let fallback_result: FallbackResult = write_fallback_for_owned(&owned_guard);
+
+        if !fallback_result.succeeded.is_empty() {
+            tracing::info!(
+                fans = ?fallback_result.succeeded,
+                "fallback: set fans to safe maximum"
+            );
+        }
+        if !fallback_result.failed.is_empty() {
+            tracing::error!(
+                failures = ?fallback_result.failed,
+                "fallback: some fans could NOT be set to safe maximum"
+            );
+        }
+
+        // Mark fallback fans in runtime state.
+        let mut fallback_ids = fallback_fan_ids.write().await;
+        for fan_id in &fallback_result.succeeded {
+            fallback_ids.insert(fan_id.clone());
+        }
+        for (fan_id, _) in &fallback_result.failed {
+            // Even failed attempts are marked as "intended fallback" so
+            // the state is visible, though the write may not have taken.
+            fallback_ids.insert(fan_id.clone());
+        }
+    }
+
+    tracing::info!("shutdown complete");
     Ok(())
 }

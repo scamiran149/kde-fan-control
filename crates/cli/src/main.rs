@@ -69,6 +69,8 @@ enum Command {
     Validate,
     /// Apply the current draft configuration.
     Apply,
+    /// Show the current runtime state (managed, degraded, fallback, unmanaged).
+    State,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -100,6 +102,7 @@ trait LifecycleProxy {
     fn get_applied_config(&self) -> zbus::Result<String>;
     fn get_degraded_summary(&self) -> zbus::Result<String>;
     fn get_lifecycle_events(&self) -> zbus::Result<String>;
+    fn get_runtime_state(&self) -> zbus::Result<String>;
     fn set_draft_fan_enrollment(
         &self,
         fan_id: &str,
@@ -243,6 +246,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })?;
             print_validation_result(&json)?;
         }
+        Command::State => {
+            let json = run_async(async {
+                let proxy = connect_lifecycle_proxy().await?;
+                Ok(proxy.get_runtime_state().await?)
+            })?;
+            print_runtime_state(&json);
+        }
     }
 
     Ok(())
@@ -355,6 +365,90 @@ fn print_validation_result(json: &str) -> Result<(), Box<dyn std::error::Error>>
     }
 
     Ok(())
+}
+
+/// Print the runtime state from the daemon, showing managed, degraded,
+/// fallback, and unmanaged fan statuses.
+fn print_runtime_state(json: &str) {
+    if json == "null" {
+        println!("No runtime state available.");
+        return;
+    }
+
+    match serde_json::from_str::<serde_json::Value>(json) {
+        Ok(value) => {
+            let obj = match value.as_object() {
+                Some(o) => o,
+                None => {
+                    println!("{}", json);
+                    return;
+                }
+            };
+
+            // Owned fans list
+            if let Some(owned) = obj.get("owned_fans").and_then(|v| v.as_array()) {
+                if owned.is_empty() {
+                    println!("Owned fans: none");
+                } else {
+                    println!("Owned fans:");
+                    for fan_id in owned {
+                        println!("  • {}", fan_id);
+                    }
+                }
+            }
+
+            // Per-fan statuses
+            if let Some(statuses) = obj.get("fan_statuses").and_then(|v| v.as_object()) {
+                if statuses.is_empty() {
+                    println!("Fan statuses: none");
+                } else {
+                    println!("\nFan statuses:");
+                    for (fan_id, status) in statuses {
+                        let status_obj = status.as_object();
+                        let status_kind = status
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+
+                        match status_kind {
+                            "managed" => {
+                                let mode = status_obj
+                                    .and_then(|o| o.get("control_mode"))
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("?");
+                                println!("  ✓ {} — managed (mode: {})", fan_id, mode);
+                            }
+                            "degraded" => {
+                                let reasons = status_obj
+                                    .and_then(|o| o.get("reasons"))
+                                    .and_then(|v| v.as_array());
+                                println!("  ⚠ {} — degraded", fan_id);
+                                if let Some(reasons) = reasons {
+                                    for reason in reasons {
+                                        let kind = reason
+                                            .get("kind")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("unknown");
+                                        println!("    reason: {}", kind);
+                                    }
+                                }
+                            }
+                            "fallback" => {
+                                println!("  ↗ {} — fallback (safe maximum)", fan_id);
+                            }
+                            "unmanaged" => {
+                                println!("  – {} — unmanaged", fan_id);
+                            }
+                            _ => {
+                                println!("  ? {} — {}", fan_id, status_kind);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(_) => println!("{}", json),
+    }
 }
 
 fn print_text(snapshot: &InventorySnapshot) {
