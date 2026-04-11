@@ -162,6 +162,14 @@ impl ControlSupervisor {
             .auto_tune_observation_window_ms = observation_window_ms;
     }
 
+    async fn stop_all(&self) {
+        let mut tasks = self.inner.tasks.write().await;
+        for (_, task) in tasks.drain() {
+            task.handle.abort();
+        }
+        self.inner.status.write().await.clear();
+    }
+
     async fn reconcile(&self) {
         let desired = {
             let config = self.inner.config.read().await;
@@ -180,13 +188,7 @@ impl ControlSupervisor {
                 .unwrap_or_default()
         };
 
-        {
-            let mut tasks = self.inner.tasks.write().await;
-            for (_, task) in tasks.drain() {
-                task.handle.abort();
-            }
-        }
-        self.inner.status.write().await.clear();
+        self.stop_all().await;
 
         for (fan_id, entry) in desired {
             self.inner.degraded.write().await.clear_fan(&fan_id);
@@ -799,7 +801,14 @@ impl InventoryIface {
             .map_err(|e| fdo::Error::Failed(format!("serialization error: {e}")))
     }
 
-    async fn set_sensor_name(&self, id: &str, name: &str) -> fdo::Result<()> {
+    async fn set_sensor_name(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        id: &str,
+        name: &str,
+    ) -> fdo::Result<()> {
+        require_authorized(connection, &header).await?;
         {
             let mut config = self.config.write().await;
             config.set_sensor_name(id, name.to_string());
@@ -811,7 +820,14 @@ impl InventoryIface {
         Ok(())
     }
 
-    async fn set_fan_name(&self, id: &str, name: &str) -> fdo::Result<()> {
+    async fn set_fan_name(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        id: &str,
+        name: &str,
+    ) -> fdo::Result<()> {
+        require_authorized(connection, &header).await?;
         {
             let mut config = self.config.write().await;
             config.set_fan_name(id, name.to_string());
@@ -823,7 +839,13 @@ impl InventoryIface {
         Ok(())
     }
 
-    async fn remove_sensor_name(&self, id: &str) -> fdo::Result<()> {
+    async fn remove_sensor_name(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        id: &str,
+    ) -> fdo::Result<()> {
+        require_authorized(connection, &header).await?;
         {
             let mut config = self.config.write().await;
             config.remove_sensor_name(id);
@@ -835,7 +857,13 @@ impl InventoryIface {
         Ok(())
     }
 
-    async fn remove_fan_name(&self, id: &str) -> fdo::Result<()> {
+    async fn remove_fan_name(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        id: &str,
+    ) -> fdo::Result<()> {
+        require_authorized(connection, &header).await?;
         {
             let mut config = self.config.write().await;
             config.remove_fan_name(id);
@@ -907,6 +935,7 @@ fn release_removed_owned_fans(
         .collect::<Vec<_>>()
     {
         if !next_owned.contains(&fan_id) {
+            let _ = kde_fan_control_core::lifecycle::write_fallback_single(&fan_id, owned);
             owned.release_fan(&fan_id);
         }
     }
@@ -1295,6 +1324,8 @@ impl LifecycleIface {
         };
 
         let had_rejections = !result.rejected.is_empty();
+
+        self.control.stop_all().await;
 
         // Update degraded state for any rejected fans.
         {
@@ -1889,9 +1920,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "D-Bus inventory and lifecycle surfaces ready"
     );
 
-    // Wait for shutdown signal, then drive fallback for owned fans.
+    // Wait for shutdown signal, stop control loops, then drive fallback for
+    // any remaining owned fans.
     tokio::signal::ctrl_c().await?;
     tracing::info!("shutting down — driving owned fans to safe maximum");
+
+    control.stop_all().await;
 
     // -----------------------------------------------------------------------
     // Fallback: drive all owned fans to safe maximum before exit
