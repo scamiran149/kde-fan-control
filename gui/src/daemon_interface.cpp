@@ -12,6 +12,8 @@
 #include <QDBusConnectionInterface>
 #include <QDebug>
 
+#include <unistd.h>
+
 DaemonInterface::DaemonInterface(QObject *parent)
     : QObject(parent)
     , m_inventoryIface(s_service, s_path, s_inventoryIface, QDBusConnection::systemBus())
@@ -50,6 +52,11 @@ QDBusConnection DaemonInterface::systemBus() const
     return QDBusConnection::systemBus();
 }
 
+bool DaemonInterface::canWrite() const
+{
+    return ::geteuid() == 0;
+}
+
 void DaemonInterface::setConnected(bool connected)
 {
     if (m_connected != connected) {
@@ -66,53 +73,85 @@ void DaemonInterface::setLastError(const QString &error)
     }
 }
 
+void DaemonInterface::handleNameOwnerChanged(const QString &name, const QString &oldOwner, const QString &newOwner)
+{
+    Q_UNUSED(oldOwner);
+    if (name == QLatin1String(s_service)) {
+        if (newOwner.isEmpty()) {
+            setConnected(false);
+        } else if (oldOwner.isEmpty()) {
+            setConnected(true);
+        } else {
+            setConnected(false);
+            setConnected(true);
+        }
+    }
+}
+
+void DaemonInterface::onDraftChanged() { draftConfig(); }
+void DaemonInterface::onAppliedConfigChanged() { appliedConfig(); runtimeState(); }
+void DaemonInterface::onDegradedStateChanged() { degradedSummary(); runtimeState(); }
+
+void DaemonInterface::onLifecycleEventAppended(const QString &eventKind, const QString &detail)
+{
+    Q_UNUSED(eventKind);
+    Q_UNUSED(detail);
+    lifecycleEvents();
+}
+
+void DaemonInterface::onAutoTuneCompleted(const QString &fanId)
+{
+    autoTuneResult(fanId);
+    runtimeState();
+}
+
 // --- Read methods (async, emit results via signals) ---
 
 void DaemonInterface::snapshot()
 {
-    callAsync(s_inventoryIface, QStringLiteral("snapshot"), {},
+    callAsync(s_inventoryIface, QStringLiteral("Snapshot"), {},
               [this](const QString &json) { Q_EMIT snapshotResult(json); });
 }
 
 void DaemonInterface::draftConfig()
 {
-    callAsync(s_lifecycleIface, QStringLiteral("get_draft_config"), {},
+    callAsync(s_lifecycleIface, QStringLiteral("GetDraftConfig"), {},
               [this](const QString &json) { Q_EMIT draftConfigResult(json); });
 }
 
 void DaemonInterface::appliedConfig()
 {
-    callAsync(s_lifecycleIface, QStringLiteral("get_applied_config"), {},
+    callAsync(s_lifecycleIface, QStringLiteral("GetAppliedConfig"), {},
               [this](const QString &json) { Q_EMIT appliedConfigResult(json); });
 }
 
 void DaemonInterface::degradedSummary()
 {
-    callAsync(s_lifecycleIface, QStringLiteral("get_degraded_summary"), {},
+    callAsync(s_lifecycleIface, QStringLiteral("GetDegradedSummary"), {},
               [this](const QString &json) { Q_EMIT degradedSummaryResult(json); });
 }
 
 void DaemonInterface::lifecycleEvents()
 {
-    callAsync(s_lifecycleIface, QStringLiteral("get_lifecycle_events"), {},
+    callAsync(s_lifecycleIface, QStringLiteral("GetLifecycleEvents"), {},
               [this](const QString &json) { Q_EMIT lifecycleEventsResult(json); });
 }
 
 void DaemonInterface::runtimeState()
 {
-    callAsync(s_lifecycleIface, QStringLiteral("get_runtime_state"), {},
+    callAsync(s_lifecycleIface, QStringLiteral("GetRuntimeState"), {},
               [this](const QString &json) { Q_EMIT runtimeStateResult(json); });
 }
 
 void DaemonInterface::controlStatus()
 {
-    callAsync(s_controlIface, QStringLiteral("get_control_status"), {},
+    callAsync(s_controlIface, QStringLiteral("GetControlStatus"), {},
               [this](const QString &json) { Q_EMIT controlStatusResult(json); });
 }
 
 void DaemonInterface::autoTuneResult(const QString &fanId)
 {
-    callAsync(s_controlIface, QStringLiteral("get_auto_tune_result"),
+    callAsync(s_controlIface, QStringLiteral("GetAutoTuneResult"),
               {QVariant::fromValue(fanId)},
               [this, fanId](const QString &json) { Q_EMIT autoTuneResultReady(fanId, json); });
 }
@@ -121,55 +160,62 @@ void DaemonInterface::autoTuneResult(const QString &fanId)
 
 void DaemonInterface::setSensorName(const QString &id, const QString &name)
 {
-    callAsyncVoid(s_inventoryIface, QStringLiteral("set_sensor_name"),
+    callAsyncVoid(s_inventoryIface, QStringLiteral("SetSensorName"),
                   {QVariant::fromValue(id), QVariant::fromValue(name)},
                   QStringLiteral("setSensorName"));
 }
 
 void DaemonInterface::setFanName(const QString &id, const QString &name)
 {
-    callAsyncVoid(s_inventoryIface, QStringLiteral("set_fan_name"),
+    callAsyncVoid(s_inventoryIface, QStringLiteral("SetFanName"),
                   {QVariant::fromValue(id), QVariant::fromValue(name)},
                   QStringLiteral("setFanName"));
 }
 
 void DaemonInterface::removeSensorName(const QString &id)
 {
-    callAsyncVoid(s_inventoryIface, QStringLiteral("remove_sensor_name"),
+    callAsyncVoid(s_inventoryIface, QStringLiteral("RemoveSensorName"),
                   {QVariant::fromValue(id)},
                   QStringLiteral("removeSensorName"));
 }
 
 void DaemonInterface::removeFanName(const QString &id)
 {
-    callAsyncVoid(s_inventoryIface, QStringLiteral("remove_fan_name"),
+    callAsyncVoid(s_inventoryIface, QStringLiteral("RemoveFanName"),
                   {QVariant::fromValue(id)},
                   QStringLiteral("removeFanName"));
 }
 
-void DaemonInterface::setDraftFanEnrollment(const QString &fanId, const QString &draftJson)
+void DaemonInterface::setDraftFanEnrollment(const QString &fanId, bool managed,
+                                            const QString &controlMode,
+                                            const QStringList &tempSources,
+                                            const QString &aggregation)
 {
-    callAsyncVoid(s_lifecycleIface, QStringLiteral("set_draft_fan_enrollment"),
-                  {QVariant::fromValue(fanId), QVariant::fromValue(draftJson)},
+    callAsyncVoid(s_lifecycleIface, QStringLiteral("SetDraftFanEnrollment"),
+                  {QVariant::fromValue(fanId),
+                   QVariant::fromValue(managed),
+                   QVariant::fromValue(controlMode),
+                   QVariant::fromValue(tempSources),
+                   QVariant::fromValue(aggregation)},
                   QStringLiteral("setDraftFanEnrollment"));
 }
 
 void DaemonInterface::removeDraftFan(const QString &fanId)
 {
-    callAsyncVoid(s_lifecycleIface, QStringLiteral("remove_draft_fan"),
+    callAsyncVoid(s_lifecycleIface, QStringLiteral("RemoveDraftFan"),
                   {QVariant::fromValue(fanId)},
                   QStringLiteral("removeDraftFan"));
 }
 
 void DaemonInterface::discardDraft()
 {
-    callAsyncVoid(s_lifecycleIface, QStringLiteral("discard_draft"), {},
+    callAsyncVoid(s_lifecycleIface, QStringLiteral("DiscardDraft"), {},
                   QStringLiteral("discardDraft"));
 }
 
 void DaemonInterface::validateDraft()
 {
-    callAsync(s_lifecycleIface, QStringLiteral("validate_draft"), {},
+    callAsync(s_lifecycleIface, QStringLiteral("ValidateDraft"), {},
               [this](const QString &json) {
                   Q_EMIT writeSucceeded(QStringLiteral("validateDraft"));
               });
@@ -177,7 +223,7 @@ void DaemonInterface::validateDraft()
 
 void DaemonInterface::applyDraft()
 {
-    callAsync(s_lifecycleIface, QStringLiteral("apply_draft"), {},
+    callAsync(s_lifecycleIface, QStringLiteral("ApplyDraft"), {},
               [this](const QString &json) {
                   Q_EMIT writeSucceeded(QStringLiteral("applyDraft"));
               });
@@ -185,14 +231,14 @@ void DaemonInterface::applyDraft()
 
 void DaemonInterface::startAutoTune(const QString &fanId)
 {
-    callAsyncVoid(s_controlIface, QStringLiteral("start_auto_tune"),
+    callAsyncVoid(s_controlIface, QStringLiteral("StartAutoTune"),
                   {QVariant::fromValue(fanId)},
                   QStringLiteral("startAutoTune"));
 }
 
 void DaemonInterface::acceptAutoTune(const QString &fanId)
 {
-    callAsync(s_controlIface, QStringLiteral("accept_auto_tune"),
+    callAsync(s_controlIface, QStringLiteral("AcceptAutoTune"),
               {QVariant::fromValue(fanId)},
               [this](const QString &json) {
                   Q_EMIT writeSucceeded(QStringLiteral("acceptAutoTune"));
@@ -201,7 +247,7 @@ void DaemonInterface::acceptAutoTune(const QString &fanId)
 
 void DaemonInterface::setDraftFanControlProfile(const QString &fanId, const QString &profileJson)
 {
-    callAsyncVoid(s_controlIface, QStringLiteral("set_draft_fan_control_profile"),
+    callAsyncVoid(s_controlIface, QStringLiteral("SetDraftFanControlProfile"),
                   {QVariant::fromValue(fanId), QVariant::fromValue(profileJson)},
                   QStringLiteral("setDraftFanControlProfile"));
 }
@@ -218,7 +264,7 @@ void DaemonInterface::callAsync(
                          : (interface == s_lifecycleIface) ? m_lifecycleIface
                          : m_controlIface;
 
-    QDBusPendingCall asyncCall = iface.asyncCall(method, args);
+    QDBusPendingCall asyncCall = iface.asyncCallWithArgumentList(method, args);
     auto *watcher = new QDBusPendingCallWatcher(asyncCall, this);
 
     QObject::connect(watcher, &QDBusPendingCallWatcher::finished, this,
@@ -244,7 +290,7 @@ void DaemonInterface::callAsyncVoid(
                          : (interface == s_lifecycleIface) ? m_lifecycleIface
                          : m_controlIface;
 
-    QDBusPendingCall asyncCall = iface.asyncCall(method, args);
+    QDBusPendingCall asyncCall = iface.asyncCallWithArgumentList(method, args);
     auto *watcher = new QDBusPendingCallWatcher(asyncCall, this);
 
     QObject::connect(watcher, &QDBusPendingCallWatcher::finished, this,

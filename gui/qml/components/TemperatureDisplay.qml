@@ -19,8 +19,11 @@ Controls.Label {
     property bool showNoSource: false
 
     text: {
-        if (showNoSource || millidegrees <= 0) {
+        if (showNoSource) {
             return i18n("No control source")
+        }
+        if (millidegrees <= 0) {
+            return i18n("No live reading")
         }
         var celsius = millidegrees / 1000.0
         return celsius.toFixed(1) + (showUnit ? " °C" : "")

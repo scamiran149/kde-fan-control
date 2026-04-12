@@ -47,7 +47,7 @@ Item {
         anchors.leftMargin: Kirigami.Units.smallSpacing
         anchors.verticalCenter: barTrack.verticalCenter
         text: outputBar.active ?
-              Math.round(outputBar.percent) + "%" :
+              outputBar.percent.toFixed(1) + "%" :
               i18n("No control")
         font: Kirigami.Theme.smallFont
         color: outputBar.active ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor

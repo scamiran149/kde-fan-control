@@ -95,7 +95,6 @@ Kirigami.Dialog {
         selectedTargetTempCelsius = 65.0
         draftLoaded = false
         validationAttempted = false
-        draftModel.hasValidationError = false
     }
 
     function loadFanIntoDraft(fanId) {
@@ -168,7 +167,7 @@ Kirigami.Dialog {
     }
 
     contentItem: ColumnLayout {
-        spacing: Kirigami.Units.mdSpacing
+        spacing: Kirigami.Units.mediumSpacing
 
         // Progress indicator
         RowLayout {
@@ -176,7 +175,7 @@ Kirigami.Dialog {
             spacing: Kirigami.Units.smallSpacing
 
             Controls.Label {
-                text: i18n("Step %1 of %2").arg(displayStepNumber).arg(totalDisplaySteps)
+                text: i18n("Step %1 of %2", displayStepNumber, totalDisplaySteps)
                 font.bold: true
             }
 
@@ -189,7 +188,7 @@ Kirigami.Dialog {
         }
 
         // Step content
-        Controls.StackLayout {
+        StackLayout {
             id: stepStack
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -199,7 +198,7 @@ Kirigami.Dialog {
             // STEP 0: Select Fan
             // ============================================
             ColumnLayout {
-                spacing: Kirigami.Units.mdSpacing
+                spacing: Kirigami.Units.mediumSpacing
 
                 Kirigami.Heading {
                     text: i18n("Select a Fan")
@@ -227,7 +226,7 @@ Kirigami.Dialog {
                         height: visible ? implicitHeight : 0
 
                         contentItem: RowLayout {
-                            spacing: Kirigami.Units.mdSpacing
+                            spacing: Kirigami.Units.mediumSpacing
 
                             Kirigami.Icon {
                                 source: "fan-symbolic"
@@ -244,7 +243,7 @@ Kirigami.Dialog {
                                     font.weight: Font.DemiBold
                                 }
                                 Controls.Label {
-                                    text: model.controlMode ? i18n("Control: %1").arg(model.controlMode) : ""
+                                    text: model.controlMode ? i18n("Control: %1", model.controlMode) : ""
                                     font: Kirigami.Theme.smallFont
                                     color: Kirigami.Theme.disabledTextColor
                                 }
@@ -272,7 +271,7 @@ Kirigami.Dialog {
             // STEP 1: Select Control Mode
             // ============================================
             ColumnLayout {
-                spacing: Kirigami.Units.mdSpacing
+                spacing: Kirigami.Units.mediumSpacing
 
                 Kirigami.Heading {
                     text: i18n("Select Control Mode")
@@ -317,7 +316,7 @@ Kirigami.Dialog {
             // STEP 2: Select Sensor Source(s)
             // ============================================
             ColumnLayout {
-                spacing: Kirigami.Units.mdSpacing
+                spacing: Kirigami.Units.mediumSpacing
 
                 Kirigami.Heading {
                     text: i18n("Select Temperature Sensor(s)")
@@ -343,7 +342,7 @@ Kirigami.Dialog {
                         width: sensorSelectionList.width
 
                         contentItem: RowLayout {
-                            spacing: Kirigami.Units.mdSpacing
+                            spacing: Kirigami.Units.mediumSpacing
 
                             Controls.CheckBox {
                                 id: sensorCheck
@@ -370,7 +369,7 @@ Kirigami.Dialog {
                                     font.weight: Font.DemiBold
                                 }
                                 Controls.Label {
-                                    text: i18n("%1 °C — %2").arg((model.temperatureMillidegrees / 1000.0).toFixed(1)).arg(model.deviceName)
+                                    text: i18n("%1 °C — %2", (model.temperatureMillidegrees / 1000.0).toFixed(1), model.deviceName)
                                     font: Kirigami.Theme.smallFont
                                     color: Kirigami.Theme.disabledTextColor
                                 }
@@ -384,7 +383,7 @@ Kirigami.Dialog {
                         ? i18n("Select at least one sensor to continue.")
                         : selectedSensorIds.length === 1
                         ? i18n("Single sensor selected.")
-                        : i18n("%1 sensors selected — aggregation will be configured next.").arg(selectedSensorIds.length)
+                        : i18n("%1 sensors selected — aggregation will be configured next.", selectedSensorIds.length)
                     wrapMode: Text.WordWrap
                     Layout.fillWidth: true
                     color: selectedSensorIds.length === 0
@@ -397,7 +396,7 @@ Kirigami.Dialog {
             // STEP 3: Choose Aggregation (conditional)
             // ============================================
             ColumnLayout {
-                spacing: Kirigami.Units.mdSpacing
+                spacing: Kirigami.Units.mediumSpacing
 
                 Kirigami.Heading {
                     text: i18n("Choose Aggregation")
@@ -432,7 +431,7 @@ Kirigami.Dialog {
 
                 ColumnLayout {
                     Layout.fillWidth: true
-                    spacing: Kirigami.Units.xsSpacing
+                    spacing: Kirigami.Units.smallSpacing
 
                     Controls.Label {
                         text: i18n("Average — mean of all selected sensor values")
@@ -461,7 +460,7 @@ Kirigami.Dialog {
             // STEP 4: Set Target Temperature
             // ============================================
             ColumnLayout {
-                spacing: Kirigami.Units.mdSpacing
+                spacing: Kirigami.Units.mediumSpacing
 
                 Kirigami.Heading {
                     text: i18n("Set Target Temperature")
@@ -513,7 +512,7 @@ Kirigami.Dialog {
             // STEP 5: Review Starter PID Values
             // ============================================
             ColumnLayout {
-                spacing: Kirigami.Units.mdSpacing
+                spacing: Kirigami.Units.mediumSpacing
 
                 Kirigami.Heading {
                     text: i18n("Review Starter PID Values")
@@ -584,7 +583,7 @@ Kirigami.Dialog {
             // STEP 6: Review + Validate + Apply
             // ============================================
             ColumnLayout {
-                spacing: Kirigami.Units.mdSpacing
+                spacing: Kirigami.Units.mediumSpacing
 
                 Kirigami.Heading {
                     text: i18n("Review and Apply")
@@ -652,7 +651,7 @@ Kirigami.Dialog {
 
                     Controls.Label {
                         Kirigami.FormData.label: i18n("Target temperature")
-                        text: i18n("%1 °C").arg(selectedTargetTempCelsius.toFixed(1))
+                        text: i18n("%1 °C", selectedTargetTempCelsius.toFixed(1))
                     }
 
                     Controls.Label {
@@ -732,7 +731,7 @@ Kirigami.Dialog {
         // Navigation buttons
         RowLayout {
             Layout.fillWidth: true
-            spacing: Kirigami.Units.mdSpacing
+            spacing: Kirigami.Units.mediumSpacing
 
             Controls.Button {
                 text: i18n("Cancel")

@@ -13,16 +13,14 @@
 
 #include <QObject>
 #include <QString>
-#include <QtQmlIntegration/qqmlintegration.h>
 
-#include <KNotifications/KStatusNotifierItem>
+#include <kstatusnotifieritem.h>
 class FanListModel;
 class StatusMonitor;
 
 class TrayIcon : public QObject
 {
     Q_OBJECT
-    QML_ELEMENT
 
     Q_PROPERTY(QString worstSeverity READ worstSeverity NOTIFY worstSeverityChanged)
     Q_PROPERTY(int managedFanCount READ managedFanCount NOTIFY managedFanCountChanged)

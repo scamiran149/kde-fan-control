@@ -13,7 +13,7 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.kde.fancontrol
 
-Kirigami.ScrollablePage {
+Kirigami.Page {
     id: fanDetailPage
 
     // --- Required properties set when pushing this page ---
@@ -28,25 +28,38 @@ Kirigami.ScrollablePage {
     property bool fanHasTach: false
     property string fanSupportReason: ""
     property bool fanHighTempAlert: false
+    property bool validationAttempted: false
+    property bool applySucceeded: false
 
     title: fanDisplayName
 
-    // Wizard configuration entry point for unmanaged available fans (Plan 04 per D-04)
-    actions.main: Kirigami.Action {
-        text: i18n("Wizard configuration")
-        iconName: "tools-wizard"
-        visible: fanDetailPage.fanSupportState === "available" && fanDetailPage.fanState === "unmanaged"
-        enabled: statusMonitor.daemonConnected
-        onTriggered: {
-            wizardDialog.preselectedFanId = fanDetailPage.fanId
-            wizardDialog.open()
+    actions: [
+        Kirigami.Action {
+            text: i18n("Back")
+            icon.name: "go-previous"
+            onTriggered: pageStack.pop()
+        },
+        Kirigami.Action {
+            text: i18n("Wizard configuration")
+            icon.name: "tools-wizard"
+            visible: fanDetailPage.fanSupportState === "available" && fanDetailPage.fanState === "unmanaged"
+            enabled: statusMonitor.daemonConnected && daemonInterface.canWrite
+            onTriggered: {
+                wizardDialog.preselectedFanId = fanDetailPage.fanId
+                wizardDialog.open()
+            }
         }
-    }
+    ]
 
-    // Load fan data into draft model when page becomes active
+    // Load fan data into draft model when page becomes active.
+    // Defer loading to avoid "Created graphical object was not placed
+    // in the graphics scene" warnings from Kirigami.ScrollablePage.
     onFanIdChanged: {
         if (fanId !== "") {
-            draftModel.loadFan(fanId)
+            Qt.callLater(function() {
+                refreshFanSnapshotFromModel()
+                draftModel.loadFan(fanId)
+            })
         }
     }
 
@@ -82,12 +95,40 @@ Kirigami.ScrollablePage {
         return (millideg / 1000.0).toFixed(1)
     }
 
+    function refreshFanSnapshotFromModel() {
+        if (fanId === "") {
+            return
+        }
+
+        var snapshot = fanListModel.fanById(fanId)
+        if (!snapshot || snapshot.fanId === undefined) {
+            return
+        }
+
+        fanDisplayName = snapshot.displayName
+        fanSupportState = snapshot.supportState
+        fanControlMode = snapshot.controlMode
+        fanState = snapshot.state
+        fanTemperatureMillidegrees = snapshot.temperatureMillidegrees
+        fanRpm = snapshot.rpm
+        fanOutputPercent = snapshot.outputPercent
+        fanHasTach = snapshot.hasTach
+        fanSupportReason = snapshot.supportReason
+        fanHighTempAlert = snapshot.highTempAlert
+    }
+
     // --- Auto-tune failure text ---
     property string autoTuneErrorText: ""
 
-    ColumnLayout {
-        id: mainLayout
-        spacing: Kirigami.Units.mdSpacing
+    Controls.ScrollView {
+        id: scrollView
+        anchors.fill: parent
+        contentWidth: availableWidth
+
+        ColumnLayout {
+            id: mainLayout
+            spacing: Kirigami.Units.mediumSpacing
+            width: scrollView.availableWidth
 
         // ================================================
         // HEADER BLOCK (always visible)
@@ -95,7 +136,7 @@ Kirigami.ScrollablePage {
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: Kirigami.Units.mdSpacing
+            spacing: Kirigami.Units.mediumSpacing
 
             // Fan display name
             Kirigami.Heading {
@@ -106,8 +147,7 @@ Kirigami.ScrollablePage {
 
             // State badge
             StateBadge {
-                state: fanDetailPage.fanState
-                supportState: fanDetailPage.fanSupportState
+                fanState: fanDetailPage.fanState
                 highTempAlert: fanDetailPage.fanHighTempAlert
             }
         }
@@ -126,9 +166,9 @@ Kirigami.ScrollablePage {
                     }
                     return i18n("Available for management")
                 } else if (fanDetailPage.fanSupportState === "partial") {
-                    return i18n("Partial support: %1").arg(fanDetailPage.fanSupportReason)
+                    return i18n("Partial support: %1", fanDetailPage.fanSupportReason)
                 }
-                return i18n("Unsupported: %1").arg(fanDetailPage.fanSupportReason)
+                return i18n("Unsupported: %1", fanDetailPage.fanSupportReason)
             }
             color: Kirigami.Theme.disabledTextColor
             wrapMode: Text.WordWrap
@@ -137,7 +177,7 @@ Kirigami.ScrollablePage {
         // Metrics row: temperature, RPM, output
         RowLayout {
             Layout.fillWidth: true
-            spacing: Kirigami.Units.lgSpacing
+            spacing: Kirigami.Units.largeSpacing
 
             TemperatureDisplay {
                 millidegrees: fanDetailPage.fanTemperatureMillidegrees
@@ -146,14 +186,16 @@ Kirigami.ScrollablePage {
 
             Controls.Label {
                 text: fanDetailPage.fanHasTach && fanDetailPage.fanRpm > 0
-                    ? i18n("%1 RPM").arg(fanDetailPage.fanRpm)
+                    ? i18n("%1 RPM", fanDetailPage.fanRpm)
                     : i18n("No RPM feedback")
                 color: Kirigami.Theme.disabledTextColor
             }
 
             OutputBar {
                 percent: fanDetailPage.fanOutputPercent
-                enabled: fanDetailPage.fanState === "managed"
+                active: fanDetailPage.fanState === "managed" ||
+                        fanDetailPage.fanState === "degraded" ||
+                        fanDetailPage.fanState === "fallback"
                 Layout.preferredWidth: 96
                 Layout.preferredHeight: 8
             }
@@ -168,6 +210,14 @@ Kirigami.ScrollablePage {
             showCloseButton: true
         }
 
+        Kirigami.InlineMessage {
+            Layout.fillWidth: true
+            type: Kirigami.MessageType.Information
+            text: i18n("This session is read-only. Run the GUI as root to edit draft settings, validate, or apply changes.")
+            visible: statusMonitor.daemonConnected && !daemonInterface.canWrite
+            showCloseButton: true
+        }
+
         // ================================================
         // AUTO-TUNE COMPLETION BANNER (per D-18/D-19)
         // ================================================
@@ -177,7 +227,12 @@ Kirigami.ScrollablePage {
             Layout.fillWidth: true
             type: Kirigami.MessageType.Positive
             visible: draftModel.autoTuneProposalAvailable
-            text: i18n("Auto-tune finished")
+            text: i18n(
+                "Auto-tune finished. Proposed PID gains: Kp %1, Ki %2, Kd %3.",
+                draftModel.proposedKp.toFixed(2),
+                draftModel.proposedKi.toFixed(2),
+                draftModel.proposedKd.toFixed(2)
+            )
 
             actions: [
                 Kirigami.Action {
@@ -194,11 +249,6 @@ Kirigami.ScrollablePage {
                 }
             ]
 
-            Controls.Label {
-                text: i18n("Review the proposed PID gains before applying them.")
-                wrapMode: Text.WordWrap
-                color: Kirigami.Theme.textColor
-            }
         }
 
         // Auto-tune error banner
@@ -209,7 +259,6 @@ Kirigami.ScrollablePage {
             visible: autoTuneErrorText !== ""
             text: autoTuneErrorText
             showCloseButton: true
-            onClosed: autoTuneErrorText = ""
         }
 
         // ================================================
@@ -220,31 +269,31 @@ Kirigami.ScrollablePage {
             id: validationSuccessBanner
             Layout.fillWidth: true
             type: Kirigami.MessageType.Positive
-            visible: draftModel.hasValidationError === false && validationAttempted
+            visible: draftModel.hasValidationError === false && fanDetailPage.validationAttempted
             text: i18n("Valid: configuration checks passed")
             showCloseButton: true
         }
-
-        property bool validationAttempted: false
 
         Kirigami.InlineMessage {
             id: validationErrorBanner
             Layout.fillWidth: true
             type: Kirigami.MessageType.Error
             visible: draftModel.hasValidationError
-            text: i18n("%1 rejected entr%2").arg(draftModel.validationErrors.length)
-                .arg(draftModel.validationErrors.length === 1 ? "y" : "ies")
+            text: i18np("%1 rejected entry", "%1 rejected entries", draftModel.validationErrors.length)
+        }
 
-            ColumnLayout {
-                anchors.left: parent.left
-                anchors.right: parent.right
-                Repeater {
-                    model: draftModel.validationErrors
-                    Controls.Label {
-                        text: modelData
-                        color: Kirigami.Theme.negativeTextColor
-                        wrapMode: Text.WordWrap
-                    }
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: Kirigami.Units.smallSpacing
+            visible: draftModel.hasValidationError
+
+            Repeater {
+                model: draftModel.validationErrors
+                Controls.Label {
+                    Layout.fillWidth: true
+                    text: modelData
+                    color: Kirigami.Theme.negativeTextColor
+                    wrapMode: Text.WordWrap
                 }
             }
         }
@@ -253,27 +302,27 @@ Kirigami.ScrollablePage {
             id: applyResultBanner
             Layout.fillWidth: true
             type: draftModel.hasApplyError ? Kirigami.MessageType.Warning : Kirigami.MessageType.Positive
-            visible: draftModel.hasApplyError || applySucceeded
+            visible: draftModel.hasApplyError || fanDetailPage.applySucceeded
             text: draftModel.hasApplyError
                 ? i18n("Some fans were rejected during apply")
                 : i18n("Changes applied successfully")
+        }
 
-            ColumnLayout {
-                anchors.left: parent.left
-                anchors.right: parent.right
-                visible: draftModel.hasApplyError
-                Repeater {
-                    model: draftModel.applyErrors
-                    Controls.Label {
-                        text: modelData
-                        color: Kirigami.Theme.negativeTextColor
-                        wrapMode: Text.WordWrap
-                    }
+        ColumnLayout {
+            Layout.fillWidth: true
+            spacing: Kirigami.Units.smallSpacing
+            visible: draftModel.hasApplyError
+
+            Repeater {
+                model: draftModel.applyErrors
+                Controls.Label {
+                    Layout.fillWidth: true
+                    text: modelData
+                    color: Kirigami.Theme.negativeTextColor
+                    wrapMode: Text.WordWrap
                 }
             }
         }
-
-        property bool applySucceeded: false
 
         // ================================================
         // CORE CONTROLS (per D-13/D-14)
@@ -289,7 +338,7 @@ Kirigami.ScrollablePage {
                 Kirigami.FormData.label: i18n("Managed")
                 checked: draftModel.enrolled
                 onToggled: draftModel.setEnrolledViaDBus(checked)
-                enabled: fanDetailPage.fanSupportState === "available"
+                enabled: fanDetailPage.fanSupportState === "available" && daemonInterface.canWrite
                 Controls.ToolTip.visible: hovered
                 Controls.ToolTip.text: i18n("Enable daemon-managed control for this fan")
                 Controls.ToolTip.delay: Kirigami.Units.toolTipDelay
@@ -314,7 +363,7 @@ Kirigami.ScrollablePage {
                     var modeText = model[currentIndex]
                     draftModel.setControlModeViaDBus(modeText.toLowerCase())
                 }
-                enabled: draftModel.enrolled
+                enabled: draftModel.enrolled && daemonInterface.canWrite
             }
 
             // 3. Temperature source selector (multi-select)
@@ -330,7 +379,7 @@ Kirigami.ScrollablePage {
                         text: model.displayName + " (" + millidegToCelsius(model.temperatureMillidegrees) + " °C)"
                         checked: isSensorSelected(model.sensorId)
                         onToggled: toggleSensor(model.sensorId)
-                        enabled: draftModel.enrolled
+                        enabled: draftModel.enrolled && daemonInterface.canWrite
                     }
                 }
             }
@@ -348,7 +397,7 @@ Kirigami.ScrollablePage {
                     return 0
                 }
                 onActivated: draftModel.setAggregationViaDBus(model[currentIndex])
-                enabled: draftModel.enrolled && draftModel.sensorIds.length >= 2
+                enabled: draftModel.enrolled && draftModel.sensorIds.length >= 2 && daemonInterface.canWrite
             }
 
             // Single sensor indicator (shown when exactly 1 sensor selected)
@@ -357,7 +406,7 @@ Kirigami.ScrollablePage {
                 text: i18n("Single sensor")
                 visible: draftModel.sensorIds.length === 1
                 color: Kirigami.Theme.disabledTextColor
-                enabled: draftModel.enrolled
+                enabled: draftModel.enrolled && daemonInterface.canWrite
             }
 
             // 5. Target temperature field
@@ -378,7 +427,7 @@ Kirigami.ScrollablePage {
                 onValueModified: {
                     draftModel.setTargetTempCelsiusViaDBus(value / 10.0)
                 }
-                enabled: draftModel.enrolled
+                enabled: draftModel.enrolled && daemonInterface.canWrite
             }
 
             // 6. PID gains (using PidField component)
@@ -389,7 +438,7 @@ Kirigami.ScrollablePage {
                 onValueModified: function(newValue) {
                     draftModel.setPidGains(newValue, draftModel.ki, draftModel.kd)
                 }
-                enabled: draftModel.enrolled
+                enabled: draftModel.enrolled && daemonInterface.canWrite
             }
 
             PidField {
@@ -399,7 +448,7 @@ Kirigami.ScrollablePage {
                 onValueModified: function(newValue) {
                     draftModel.setPidGains(draftModel.kp, newValue, draftModel.kd)
                 }
-                enabled: draftModel.enrolled
+                enabled: draftModel.enrolled && daemonInterface.canWrite
             }
 
             PidField {
@@ -409,7 +458,7 @@ Kirigami.ScrollablePage {
                 onValueModified: function(newValue) {
                     draftModel.setPidGains(draftModel.kp, draftModel.ki, newValue)
                 }
-                enabled: draftModel.enrolled
+                enabled: draftModel.enrolled && daemonInterface.canWrite
             }
 
             // 7. Start auto-tune action (per D-17)
@@ -417,7 +466,7 @@ Kirigami.ScrollablePage {
                 Kirigami.FormData.label: i18n("Auto-tune")
                 text: i18n("Start auto-tune")
                 icon.name: "run-build-symbolic"
-                enabled: draftModel.enrolled && !draftModel.autoTuneRunning
+                enabled: draftModel.enrolled && !draftModel.autoTuneRunning && daemonInterface.canWrite
                 onClicked: {
                     draftModel.startAutoTune()
                 }
@@ -433,8 +482,8 @@ Kirigami.ScrollablePage {
 
         RowLayout {
             Layout.fillWidth: true
-            Layout.topMargin: Kirigami.Units.mdSpacing
-            spacing: Kirigami.Units.mdSpacing
+            Layout.topMargin: Kirigami.Units.mediumSpacing
+            spacing: Kirigami.Units.mediumSpacing
 
             Controls.Button {
                 text: i18n("Validate draft")
@@ -444,7 +493,7 @@ Kirigami.ScrollablePage {
                     fanDetailPage.applySucceeded = false
                     draftModel.validateDraft()
                 }
-                enabled: statusMonitor.daemonConnected
+                enabled: statusMonitor.daemonConnected && daemonInterface.canWrite
             }
 
             Controls.Button {
@@ -457,31 +506,67 @@ Kirigami.ScrollablePage {
                     fanDetailPage.applySucceeded = false
                     draftModel.applyDraft()
                 }
-                enabled: statusMonitor.daemonConnected
+                enabled: statusMonitor.daemonConnected && daemonInterface.canWrite
             }
 
             Controls.Button {
                 text: i18n("Discard draft")
                 icon.name: "edit-undo-symbolic"
                 onClicked: discardDialog.open()
-                enabled: statusMonitor.daemonConnected
+                enabled: statusMonitor.daemonConnected && daemonInterface.canWrite
             }
         }
 
         // Discard confirmation dialog (per UI-SPEC)
-        Controls.Dialog {
+        Controls.Popup {
             id: discardDialog
-            title: i18n("Discard draft changes")
             modal: true
-            standardButtons: Controls.Dialog.Ok | Controls.Dialog.Cancel
+            focus: true
+            closePolicy: Controls.Popup.CloseOnEscape | Controls.Popup.CloseOnPressOutside
+            anchors.centerIn: parent
+            width: Math.min(parent.width * 0.6, 420)
+            padding: Kirigami.Units.largeSpacing
 
-            Controls.Label {
-                text: i18n("Discard all staged changes? This keeps the current applied configuration and removes the current draft.")
-                wrapMode: Text.WordWrap
+            background: Rectangle {
+                radius: 8
+                color: Kirigami.Theme.backgroundColor
+                border.color: Kirigami.Theme.disabledTextColor
             }
 
-            onAccepted: {
-                draftModel.discardDraft()
+            contentItem: ColumnLayout {
+                spacing: Kirigami.Units.mediumSpacing
+
+                Kirigami.Heading {
+                    text: i18n("Discard draft changes")
+                    level: 3
+                }
+
+                Controls.Label {
+                    Layout.fillWidth: true
+                    text: i18n("Discard all staged changes? This keeps the current applied configuration and removes the current draft.")
+                    wrapMode: Text.WordWrap
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+
+                    Item { Layout.fillWidth: true }
+
+                    Controls.Button {
+                        text: i18n("Cancel")
+                        onClicked: discardDialog.close()
+                    }
+
+                    Controls.Button {
+                        text: i18n("Discard")
+                        icon.name: "edit-delete-remove"
+                        highlighted: true
+                        onClicked: {
+                            draftModel.discardDraft()
+                            discardDialog.close()
+                        }
+                    }
+                }
             }
         }
 
@@ -489,29 +574,20 @@ Kirigami.ScrollablePage {
         // ADVANCED TABS (per D-16)
         // ================================================
 
-        Controls.TabBar {
-            id: advancedTabBar
+        Controls.ComboBox {
+            id: advancedSectionSelector
             Layout.fillWidth: true
             Layout.topMargin: Kirigami.Units.xlSpacing
-
-            Controls.TabButton {
-                text: i18n("Runtime")
-            }
-            Controls.TabButton {
-                text: i18n("Advanced")
-            }
-            Controls.TabButton {
-                text: i18n("Events")
-            }
+            model: [i18n("Runtime"), i18n("Advanced"), i18n("Events")]
         }
 
-        Controls.StackLayout {
+        StackLayout {
             Layout.fillWidth: true
-            currentIndex: advancedTabBar.currentIndex
+            currentIndex: advancedSectionSelector.currentIndex
 
             // --- Runtime Tab ---
             ColumnLayout {
-                spacing: Kirigami.Units.mdSpacing
+                spacing: Kirigami.Units.mediumSpacing
 
                 Kirigami.FormLayout {
                     Layout.fillWidth: true
@@ -531,7 +607,7 @@ Kirigami.ScrollablePage {
                     Controls.Label {
                         Kirigami.FormData.label: i18n("Target temperature")
                         text: draftModel.targetTempCelsius > 0
-                            ? i18n("%1 °C").arg(draftModel.targetTempCelsius.toFixed(1))
+                            ? i18n("%1 °C", draftModel.targetTempCelsius.toFixed(1))
                             : i18n("Not set")
                     }
 
@@ -540,7 +616,7 @@ Kirigami.ScrollablePage {
                         text: {
                             if (fanDetailPage.fanTemperatureMillidegrees > 0 && draftModel.targetTempMillidegrees > 0) {
                                 var error = (fanDetailPage.fanTemperatureMillidegrees - draftModel.targetTempMillidegrees) / 1000.0
-                                return i18n("%1 °C").arg(error.toFixed(1))
+                                return i18n("%1 °C", error.toFixed(1))
                             }
                             return i18n("N/A")
                         }
@@ -549,7 +625,7 @@ Kirigami.ScrollablePage {
                     Controls.Label {
                         Kirigami.FormData.label: i18n("Output")
                         text: fanDetailPage.fanOutputPercent >= 0
-                            ? i18n("%1%").arg(Math.round(fanDetailPage.fanOutputPercent))
+                            ? i18n("%1%", Math.round(fanDetailPage.fanOutputPercent))
                             : i18n("N/A")
                     }
 
@@ -572,7 +648,7 @@ Kirigami.ScrollablePage {
 
             // --- Advanced Tab ---
             ColumnLayout {
-                spacing: Kirigami.Units.mdSpacing
+                spacing: Kirigami.Units.mediumSpacing
 
                 Kirigami.FormLayout {
                     Layout.fillWidth: true
@@ -655,7 +731,7 @@ Kirigami.ScrollablePage {
 
             // --- Events Tab ---
             ColumnLayout {
-                spacing: Kirigami.Units.mdSpacing
+                spacing: Kirigami.Units.mediumSpacing
 
                 Controls.Label {
                     text: i18n("Lifecycle Events")
@@ -672,7 +748,7 @@ Kirigami.ScrollablePage {
                     delegate: Kirigami.AbstractCard {
                         width: ListView.view.width
                         contentItem: RowLayout {
-                            spacing: Kirigami.Units.mdSpacing
+                            spacing: Kirigami.Units.mediumSpacing
 
                             Controls.Label {
                                 text: model.timestamp
@@ -699,7 +775,7 @@ Kirigami.ScrollablePage {
                                 }
 
                                 Controls.Label {
-                                    text: i18n("Fan: %1").arg(model.fanId)
+                                    text: i18n("Fan: %1", model.fanId)
                                     visible: model.fanId !== ""
                                     color: Kirigami.Theme.disabledTextColor
                                     font.pointSize: Kirigami.Theme.smallFont.pointSize
@@ -729,18 +805,38 @@ Kirigami.ScrollablePage {
             }
         }
     }
+    }
 
     // Refresh lifecycle events when page activates
     Connections {
         target: daemonInterface
+        function onSnapshotResult(json) {
+            Qt.callLater(fanDetailPage.refreshFanSnapshotFromModel)
+        }
+        function onRuntimeStateResult(json) {
+            Qt.callLater(fanDetailPage.refreshFanSnapshotFromModel)
+        }
+        function onDraftConfigResult(json) {
+            Qt.callLater(fanDetailPage.refreshFanSnapshotFromModel)
+        }
         function onLifecycleEventsResult(json) {
             lifecycleEventModel.refresh(json)
         }
     }
 
+    Connections {
+        target: fanListModel
+        function onModelReset() {
+            fanDetailPage.refreshFanSnapshotFromModel()
+        }
+    }
+
     Component.onCompleted: {
         if (fanId !== "") {
-            daemonInterface.lifecycleEvents()
+            Qt.callLater(function() {
+                refreshFanSnapshotFromModel()
+                daemonInterface.lifecycleEvents()
+            })
         }
     }
 }

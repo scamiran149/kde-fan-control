@@ -67,12 +67,13 @@ void DraftModel::setEnrolled(bool enrolled)
 void DraftModel::setEnrolledViaDBus(bool enrolled)
 {
     setEnrolled(enrolled);
-    QJsonObject enrollmentObj;
-    enrollmentObj[QStringLiteral("managed")] = enrolled;
-    enrollmentObj[QStringLiteral("control_mode")] = m_controlMode.isEmpty()
-        ? QStringLiteral("pwm") : m_controlMode;
-    QJsonDocument doc(enrollmentObj);
-    m_daemon->setDraftFanEnrollment(m_fanId, QString::fromUtf8(doc.toJson(QJsonDocument::Compact)));
+    m_daemon->setDraftFanEnrollment(
+        m_fanId,
+        enrolled,
+        m_controlMode.isEmpty() ? QStringLiteral("pwm") : m_controlMode,
+        m_sensorIds,
+        m_aggregation.isEmpty() ? QStringLiteral("average") : m_aggregation
+    );
 }
 
 // --- Control mode ---
@@ -88,12 +89,13 @@ void DraftModel::setControlMode(const QString &mode)
 void DraftModel::setControlModeViaDBus(const QString &mode)
 {
     setControlMode(mode);
-    // Update enrollment with new control mode
-    QJsonObject enrollmentObj;
-    enrollmentObj[QStringLiteral("managed")] = m_enrolled;
-    enrollmentObj[QStringLiteral("control_mode")] = mode;
-    QJsonDocument doc(enrollmentObj);
-    m_daemon->setDraftFanEnrollment(m_fanId, QString::fromUtf8(doc.toJson(QJsonDocument::Compact)));
+    m_daemon->setDraftFanEnrollment(
+        m_fanId,
+        m_enrolled,
+        mode,
+        m_sensorIds,
+        m_aggregation.isEmpty() ? QStringLiteral("average") : m_aggregation
+    );
 }
 
 // --- Sensor IDs ---

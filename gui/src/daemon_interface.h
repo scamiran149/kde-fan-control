@@ -24,12 +24,14 @@ class DaemonInterface : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(bool connected READ connected NOTIFY connectedChanged)
+    Q_PROPERTY(bool canWrite READ canWrite CONSTANT)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
 
 public:
     explicit DaemonInterface(QObject *parent = nullptr);
 
     bool connected() const { return m_connected; }
+    bool canWrite() const;
     QString lastError() const { return m_lastError; }
 
     // --- Read methods (JSON string responses) ---
@@ -49,7 +51,10 @@ public:
     Q_INVOKABLE void setFanName(const QString &id, const QString &name);
     Q_INVOKABLE void removeSensorName(const QString &id);
     Q_INVOKABLE void removeFanName(const QString &id);
-    Q_INVOKABLE void setDraftFanEnrollment(const QString &fanId, const QString &draftJson);
+    Q_INVOKABLE void setDraftFanEnrollment(const QString &fanId, bool managed,
+                                            const QString &controlMode,
+                                            const QStringList &tempSources,
+                                            const QString &aggregation);
     Q_INVOKABLE void removeDraftFan(const QString &fanId);
     Q_INVOKABLE void discardDraft();
     Q_INVOKABLE void validateDraft();
@@ -82,6 +87,14 @@ signals:
 public slots:
     void setConnected(bool connected);
     void setLastError(const QString &error);
+
+private slots:
+    void handleNameOwnerChanged(const QString &name, const QString &oldOwner, const QString &newOwner);
+    void onDraftChanged();
+    void onAppliedConfigChanged();
+    void onDegradedStateChanged();
+    void onLifecycleEventAppended(const QString &eventKind, const QString &detail);
+    void onAutoTuneCompleted(const QString &fanId);
 
 private:
     void callAsync(const QString &interface, const QString &method,

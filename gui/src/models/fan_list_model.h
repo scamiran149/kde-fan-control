@@ -13,11 +13,13 @@
 
 #include <QAbstractListModel>
 #include <QList>
+#include <QVariantMap>
 #include "../types.h"
 
 class FanListModel : public QAbstractListModel
 {
     Q_OBJECT
+    Q_ENUMS(Roles)
 
 public:
     enum Roles {
@@ -43,7 +45,9 @@ public:
 
     Q_INVOKABLE void refresh(const QString &inventoryJson,
                               const QString &runtimeJson,
-                              const QString &configJson);
+                              const QString &configJson,
+                              const QString &controlJson = QString());
+    Q_INVOKABLE QVariantMap fanById(const QString &fanId) const;
 
 private:
     static int severityOrder(const QString &state, bool highTempAlert);

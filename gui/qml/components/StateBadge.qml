@@ -16,7 +16,7 @@ import org.kde.kirigami as Kirigami
 
 RowLayout {
     id: stateBadge
-    spacing: Kirigami.Units.xsSpacing
+    spacing: Kirigami.Units.smallSpacing
 
     property string fanState: "unmanaged"
     property bool highTempAlert: false
@@ -30,9 +30,9 @@ RowLayout {
             switch (stateBadge.fanState) {
             case "managed":   return Kirigami.Theme.positiveTextColor
             case "unmanaged":  return Kirigami.Theme.neutralTextColor
-            case "degraded":   return Kirigami.Theme.warningTextColor
+            case "degraded":   return Kirigami.Theme.neutralTextColor
             case "fallback":   return Kirigami.Theme.negativeTextColor
-            case "partial":    return Kirigami.Theme.warningTextColor
+            case "partial":    return Kirigami.Theme.neutralTextColor
             case "unavailable": return Kirigami.Theme.disabledTextColor
             default:           return Kirigami.Theme.disabledTextColor
             }
@@ -72,7 +72,7 @@ RowLayout {
             width: Kirigami.Units.iconSizes.small
             height: Kirigami.Units.iconSizes.small
             anchors.left: parent.left
-            anchors.leftMargin: Kirigami.Units.xsSpacing
+            anchors.leftMargin: Kirigami.Units.smallSpacing
             anchors.verticalCenter: parent.verticalCenter
         }
     }
@@ -101,7 +101,7 @@ RowLayout {
             width: Kirigami.Units.iconSizes.small
             height: Kirigami.Units.iconSizes.small
             anchors.left: parent.left
-            anchors.leftMargin: Kirigami.Units.xsSpacing
+            anchors.leftMargin: Kirigami.Units.smallSpacing
             anchors.verticalCenter: parent.verticalCenter
             visible: stateBadge.highTempAlert
         }

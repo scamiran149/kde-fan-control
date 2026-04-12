@@ -64,9 +64,9 @@ Item {
     RowLayout {
         id: rowLayout
         anchors.fill: parent
-        anchors.leftMargin: Kirigami.Units.mdSpacing
-        anchors.rightMargin: Kirigami.Units.mdSpacing
-        spacing: Kirigami.Units.smSpacing
+        anchors.leftMargin: Kirigami.Units.mediumSpacing
+        anchors.rightMargin: Kirigami.Units.mediumSpacing
+        spacing: Kirigami.Units.smallSpacing
 
         // State icon (compact version of StateBadge)
         Kirigami.Icon {
@@ -131,7 +131,7 @@ Item {
         hoverEnabled: true
         onClicked: fanTrayDelegate.clicked()
 
-        Controls.ToolTip.visible: hovered
+        Controls.ToolTip.visible: mouseArea.containsMouse
         Controls.ToolTip.delay: Kirigami.Units.toolTipDelay
         Controls.ToolTip.text: {
             var state = fanTrayDelegate.fanState

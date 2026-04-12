@@ -17,17 +17,25 @@ Kirigami.ApplicationWindow {
     minimumWidth: 980
     minimumHeight: 700
 
+    onVisibilityChanged: {
+        if (root.visibility === Window.Hidden || root.visibility === Window.Minimized) {
+            statusMonitor.pollingEnabled = false
+        } else {
+            statusMonitor.pollingEnabled = true
+        }
+    }
+
     globalDrawer: Kirigami.GlobalDrawer {
         isMenu: true
         actions: [
             Kirigami.Action {
                 text: i18n("Overview")
-                iconName: "go-home"
+                icon.name: "go-home"
                 onTriggered: { pageStack.clear(); pageStack.push(overviewPage) }
             },
             Kirigami.Action {
                 text: i18n("Inventory")
-                iconName: "view-list-symbolic"
+                icon.name: "view-list-symbolic"
                 onTriggered: { pageStack.clear(); pageStack.push(inventoryPage) }
             },
             Kirigami.Action {
@@ -35,11 +43,11 @@ Kirigami.ApplicationWindow {
             },
             Kirigami.Action {
                 text: i18n("About")
-                iconName: "help-about"
+                icon.name: "help-about"
             },
             Kirigami.Action {
                 text: i18n("Quit")
-                iconName: "application-exit"
+                icon.name: "application-exit"
                 onTriggered: Qt.quit()
             }
         ]
@@ -58,32 +66,21 @@ Kirigami.ApplicationWindow {
         id: wizardDialog
     }
 
-    // Tray popover view — shown when the tray icon is activated
+    // Placeholder component for future tray popover wiring.
+    // Keep it hidden so it doesn't render inside the main window.
     TrayPopover {
         id: trayPopover
+        visible: false
     }
 
     pageStack.initialPage: overviewPage
-
-    Connections {
-        target: daemonInterface
-        function onSnapshotResult(json) {
-            statusMonitor.onSnapshotResult(json)
-        }
-        function onRuntimeStateResult(json) {
-            statusMonitor.onRuntimeStateResult(json)
-        }
-        function onControlStatusResult(json) {
-            statusMonitor.onControlStatusResult(json)
-        }
-    }
 
     Connections {
         target: trayIcon
         function onActivateMainWindow() {
             root.show()
             root.raise()
-            root.activate()
+            root.requestActivate()
         }
     }
 }

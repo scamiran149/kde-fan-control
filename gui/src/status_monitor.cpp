@@ -48,9 +48,17 @@ StatusMonitor::StatusMonitor(DaemonInterface *daemon,
             });
 
     // Connect DBus signals from the daemon using the SLOT-based approach.
-    // Qt6's QDBusConnection::connect() with lambdas is not supported;
-    // we use forward-compatible signal relay slots.
     connectDBusSignals();
+
+    // 3-second polling timer for live data updates.
+    m_refreshTimer = new QTimer(this);
+    m_refreshTimer->setInterval(3000);
+    m_refreshTimer->setSingleShot(false);
+    connect(m_refreshTimer, &QTimer::timeout, this, &StatusMonitor::refreshAll);
+
+    // Sync the initial daemon state from the proxy so QML doesn't start in a
+    // disconnected state while successful DBus calls are already flowing.
+    onDaemonConnectedChanged();
 }
 
 void StatusMonitor::checkDaemonConnected()
@@ -71,7 +79,11 @@ void StatusMonitor::onDaemonConnectedChanged()
     }
     if (connected) {
         refreshAll();
+        if (m_pollingEnabled) {
+            m_refreshTimer->start();
+        }
     } else {
+        m_refreshTimer->stop();
         // Clear models when daemon disappears
         m_fanModel->refresh(QString(), QString(), QString());
         m_sensorModel->refresh(QString());
@@ -84,7 +96,7 @@ void StatusMonitor::onSnapshotResult(const QString &json)
     m_sensorModel->refresh(json);
     // Also refresh fan model if runtime state is available.
     if (!m_cachedRuntimeState.isEmpty()) {
-        m_fanModel->refresh(m_cachedSnapshot, m_cachedRuntimeState, m_cachedDraftConfig);
+        m_fanModel->refresh(m_cachedSnapshot, m_cachedRuntimeState, m_cachedDraftConfig, m_cachedControlStatus);
     }
 }
 
@@ -92,21 +104,23 @@ void StatusMonitor::onRuntimeStateResult(const QString &json)
 {
     m_cachedRuntimeState = json;
     if (!m_cachedSnapshot.isEmpty()) {
-        m_fanModel->refresh(m_cachedSnapshot, m_cachedRuntimeState, m_cachedDraftConfig);
+        m_fanModel->refresh(m_cachedSnapshot, m_cachedRuntimeState, m_cachedDraftConfig, m_cachedControlStatus);
     }
 }
 
 void StatusMonitor::onControlStatusResult(const QString &json)
 {
-    Q_UNUSED(json);
-    m_daemon->runtimeState();
+    m_cachedControlStatus = json;
+    if (!m_cachedSnapshot.isEmpty() && !m_cachedRuntimeState.isEmpty()) {
+        m_fanModel->refresh(m_cachedSnapshot, m_cachedRuntimeState, m_cachedDraftConfig, m_cachedControlStatus);
+    }
 }
 
 void StatusMonitor::onDraftConfigResult(const QString &json)
 {
     m_cachedDraftConfig = json;
     if (!m_cachedSnapshot.isEmpty() && !m_cachedRuntimeState.isEmpty()) {
-        m_fanModel->refresh(m_cachedSnapshot, m_cachedRuntimeState, m_cachedDraftConfig);
+        m_fanModel->refresh(m_cachedSnapshot, m_cachedRuntimeState, m_cachedDraftConfig, m_cachedControlStatus);
     }
 }
 
@@ -116,29 +130,72 @@ void StatusMonitor::onDegradedSummaryResult(const QString &json)
     m_daemon->runtimeState();
 }
 
+void StatusMonitor::onDaemonDisconnected()
+{
+    m_refreshTimer->stop();
+    m_daemonConnected = false;
+    Q_EMIT daemonConnectedChanged();
+    m_fanModel->refresh(QString(), QString(), QString());
+    m_sensorModel->refresh(QString());
+    m_cachedSnapshot.clear();
+    m_cachedRuntimeState.clear();
+    m_cachedDraftConfig.clear();
+    m_cachedControlStatus.clear();
+}
+
+void StatusMonitor::setPollingEnabled(bool enabled)
+{
+    if (m_pollingEnabled == enabled)
+        return;
+    m_pollingEnabled = enabled;
+    Q_EMIT pollingEnabledChanged();
+    if (enabled && m_daemonConnected) {
+        m_refreshTimer->start();
+    } else {
+        m_refreshTimer->stop();
+    }
+}
+
 void StatusMonitor::connectDBusSignals()
 {
     QDBusConnection bus = QDBusConnection::systemBus();
 
-    // Lifecycle signals — use SLOT-based connection with a helper QObject
-    // since QDBusConnection::connect doesn't support lambdas in Qt6.
-    // Instead, we rely on the daemon interface polling in refreshAll()
-    // triggered by DaemonInterface signals.
+    bus.connect(QStringLiteral("org.kde.FanControl"),
+                QStringLiteral("/org/kde/FanControl/Lifecycle"),
+                QStringLiteral("org.kde.FanControl.Lifecycle"),
+                QStringLiteral("DraftChanged"),
+                m_daemon, SLOT(onDraftChanged()));
 
-    // For DBus signal forwarding, we use the daemon interface's async
-    // method calls as the canonical data source. When the daemon emits
-    // DBus signals, we'll detect changes through our periodic refreshAll()
-    // calls which are triggered by connection state changes and user actions.
+    bus.connect(QStringLiteral("org.kde.FanControl"),
+                QStringLiteral("/org/kde/FanControl/Lifecycle"),
+                QStringLiteral("org.kde.FanControl.Lifecycle"),
+                QStringLiteral("AppliedConfigChanged"),
+                m_daemon, SLOT(onAppliedConfigChanged()));
 
-    // Note: Direct DBus signal connections with QDBusConnection::connect()
-    // require a SLOT-compatible slot signature. We handle this by
-    // establishing signal connections that relay through DaemonInterface.
+    bus.connect(QStringLiteral("org.kde.FanControl"),
+                QStringLiteral("/org/kde/FanControl/Lifecycle"),
+                QStringLiteral("org.kde.FanControl.Lifecycle"),
+                QStringLiteral("DegradedStateChanged"),
+                m_daemon, SLOT(onDegradedStateChanged()));
+
+    bus.connect(QStringLiteral("org.kde.FanControl"),
+                QStringLiteral("/org/kde/FanControl/Lifecycle"),
+                QStringLiteral("org.kde.FanControl.Lifecycle"),
+                QStringLiteral("LifecycleEventAppended"),
+                m_daemon, SLOT(onLifecycleEventAppended(QString,QString)));
+
+    bus.connect(QStringLiteral("org.kde.FanControl"),
+                QStringLiteral("/org/kde/FanControl/Control"),
+                QStringLiteral("org.kde.FanControl.Control"),
+                QStringLiteral("AutoTuneCompleted"),
+                m_daemon, SLOT(onAutoTuneCompleted(QString)));
 }
 
 void StatusMonitor::refreshAll()
 {
     m_daemon->snapshot();
     m_daemon->runtimeState();
+    m_daemon->controlStatus();
     m_daemon->draftConfig();
     m_daemon->degradedSummary();
 }

@@ -11,6 +11,7 @@ import QtQuick
 import QtQuick.Controls as Controls
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
+import org.kde.fancontrol
 
 Kirigami.AbstractCard {
     id: fanRow
@@ -29,12 +30,10 @@ Kirigami.AbstractCard {
     property bool highTempAlert: false
     property int severityOrder: 0
 
-    signal clicked
-
-    minimumHeight: 56
+    Layout.minimumHeight: 56
 
     contentItem: RowLayout {
-        spacing: Kirigami.Units.mdSpacing
+        spacing: Kirigami.Units.mediumSpacing
 
         // State badge
         StateBadge {

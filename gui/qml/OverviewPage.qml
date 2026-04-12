@@ -29,7 +29,7 @@ Kirigami.ScrollablePage {
 
     ColumnLayout {
         id: mainLayout
-        spacing: Kirigami.Units.mdSpacing
+        spacing: Kirigami.Units.mediumSpacing
 
         // -- Severity banners (mutually exclusive in display order: fallback > degraded > disconnected) --
 
@@ -87,7 +87,7 @@ Kirigami.ScrollablePage {
                 highTempAlert: model.highTempAlert
                 severityOrder: model.severityOrder
                 onClicked: {
-                    pageStack.push(Qt.resolvedUrl("FanDetailPage.qml"), {
+                    var pageProps = {
                         "fanId": fanId,
                         "fanDisplayName": displayName,
                         "fanSupportState": supportState,
@@ -99,7 +99,12 @@ Kirigami.ScrollablePage {
                         "fanHasTach": hasTach,
                         "fanSupportReason": supportReason,
                         "fanHighTempAlert": highTempAlert
-                    })
+                    }
+                    if (pageStack.currentItem && pageStack.currentItem.toString().indexOf("FanDetailPage") !== -1) {
+                        pageStack.replace(Qt.resolvedUrl("FanDetailPage.qml"), pageProps)
+                    } else {
+                        pageStack.push(Qt.resolvedUrl("FanDetailPage.qml"), pageProps)
+                    }
                 }
             }
 
@@ -107,7 +112,7 @@ Kirigami.ScrollablePage {
             Kirigami.PlaceholderMessage {
                 anchors.centerIn: parent
                 width: parent.width - Kirigami.Units.largeSpacing * 4
-                visible: fanListModel.rowCount() === 0 && statusMonitor.daemonConnected
+                visible: fanList.count === 0 && statusMonitor.daemonConnected
                 icon.name: "dialog-information-symbolic"
                 text: i18n("No managed fans yet")
                 explanation: i18n("Select a supported fan, choose its temperature source, then validate and apply the draft to start daemon-managed control.")
@@ -116,11 +121,12 @@ Kirigami.ScrollablePage {
             // Empty-state wizard CTA (Plan 04: wizard entry point per D-04)
             Controls.Button {
                 Layout.alignment: Qt.AlignHCenter
-                Layout.topMargin: Kirigami.Units.mdSpacing
-                visible: fanListModel.rowCount() === 0 && statusMonitor.daemonConnected
+                Layout.topMargin: Kirigami.Units.mediumSpacing
+                visible: fanList.count === 0 && statusMonitor.daemonConnected
                 text: i18n("Wizard configuration")
                 icon.name: "tools-wizard"
                 highlighted: true
+                enabled: daemonInterface.canWrite
                 onClicked: {
                     wizardDialog.preselectedFanId = ""
                     wizardDialog.open()
@@ -130,10 +136,10 @@ Kirigami.ScrollablePage {
     }
 
     // Toolbar action: Wizard configuration (secondary per D-04)
-    actions.main: Kirigami.Action {
+    actions: Kirigami.Action {
         text: i18n("Wizard configuration")
-        iconName: "tools-wizard"
-        enabled: statusMonitor.daemonConnected
+        icon.name: "tools-wizard"
+        enabled: statusMonitor.daemonConnected && daemonInterface.canWrite
         onTriggered: {
             wizardDialog.preselectedFanId = ""
             wizardDialog.open()

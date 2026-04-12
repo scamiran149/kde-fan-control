@@ -15,9 +15,27 @@
 #include "status_monitor.h"
 #include "models/fan_list_model.h"
 
-#include <KNotifications/KNotification>
+#include <knotification.h>
 
 #include <QDebug>
+#include <QStandardPaths>
+
+namespace {
+QString notificationComponentName()
+{
+    return QStringLiteral("kdefancontrol");
+}
+
+bool notificationConfigAvailable()
+{
+    return !QStandardPaths::locate(QStandardPaths::GenericDataLocation,
+                                   QStringLiteral("knotifications6/%1.notifyrc").arg(notificationComponentName()))
+                .isEmpty()
+        || !QStandardPaths::locate(QStandardPaths::GenericDataLocation,
+                                   QStringLiteral("knotifications5/%1.notifyrc").arg(notificationComponentName()))
+                .isEmpty();
+}
+}
 
 NotificationHandler::NotificationHandler(StatusMonitor *statusMonitor,
                                          FanListModel *fanModel,
@@ -120,15 +138,18 @@ void NotificationHandler::checkTransitions()
     m_previousState = currentSnapshot;
 
     // Fire notifications per D-11 (only on transitions)
+    if (!notificationConfigAvailable()) {
+        return;
+    }
+
     if (newFallback) {
         KNotification *n = KNotification::event(
             QStringLiteral("fallback-active"),
             QStringLiteral("Fallback active"),
             QStringLiteral("Managed fans were driven to safe maximum output. Open Fan Control now."),
             QStringLiteral("dialog-error-symbolic"),
-            nullptr,
             KNotification::CloseOnTimeout,
-            QStringLiteral("kdefancontrol.notifyrc"));
+            notificationComponentName());
         n->setUrgency(KNotification::HighUrgency);
         n->sendEvent();
     }
@@ -139,9 +160,8 @@ void NotificationHandler::checkTransitions()
             QStringLiteral("Fan control degraded"),
             QStringLiteral("One or more managed fans could not be controlled safely. Open Fan Control to review the reason."),
             QStringLiteral("data-warning-symbolic"),
-            nullptr,
             KNotification::CloseOnTimeout,
-            QStringLiteral("kdefancontrol.notifyrc"));
+            notificationComponentName());
         n->setUrgency(KNotification::HighUrgency);
         n->sendEvent();
     }
@@ -152,9 +172,8 @@ void NotificationHandler::checkTransitions()
             QStringLiteral("High temperature alert"),
             QStringLiteral("A managed fan is above its target temperature. Check runtime status and tuning."),
             QStringLiteral("temperature-high-symbolic"),
-            nullptr,
             KNotification::CloseOnTimeout,
-            QStringLiteral("kdefancontrol.notifyrc"));
+            notificationComponentName());
         n->setUrgency(KNotification::NormalUrgency);
         n->sendEvent();
     }

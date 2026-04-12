@@ -18,9 +18,34 @@ import org.kde.fancontrol
 Rectangle {
     id: trayPopover
 
+    function countByState(stateName) {
+        var count = 0
+        for (var i = 0; i < fanListModel.rowCount(); i++) {
+            var idx = fanListModel.index(i, 0)
+            if (fanListModel.data(idx, FanListModel.StateRole) === stateName) {
+                count++
+            }
+        }
+        return count
+    }
+
+    function countHighTempAlerts() {
+        var count = 0
+        for (var i = 0; i < fanListModel.rowCount(); i++) {
+            var idx = fanListModel.index(i, 0)
+            var state = fanListModel.data(idx, FanListModel.StateRole)
+            var ht = fanListModel.data(idx, FanListModel.HighTempAlertRole)
+            if (state === "managed" && ht) {
+                count++
+            }
+        }
+        return count
+    }
+
     // Preferred width per UI-SPEC: 360px
     width: 360
-    height: mainLayout.height + Kirigami.Units.largeSpacing * 2
+    implicitHeight: mainLayout.implicitHeight + Kirigami.Units.largeSpacing * 2
+    height: implicitHeight
     color: Kirigami.Theme.alternateBackgroundColor
     radius: Kirigami.Units.smallSpacing
 
@@ -30,9 +55,11 @@ Rectangle {
 
     ColumnLayout {
         id: mainLayout
-        anchors.fill: parent
-        anchors.margins: Kirigami.Units.mdSpacing
-        spacing: Kirigami.Units.smSpacing
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.margins: Kirigami.Units.mediumSpacing
+        spacing: Kirigami.Units.smallSpacing
 
         // ================================================
         // HEADER: daemon connection state, severity, counts
@@ -40,7 +67,7 @@ Rectangle {
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: Kirigami.Units.mdSpacing
+            spacing: Kirigami.Units.mediumSpacing
 
             // Daemon connection indicator
             Rectangle {
@@ -113,31 +140,8 @@ Rectangle {
 
         ColumnLayout {
             Layout.fillWidth: true
-            spacing: Kirigami.Units.xsSpacing
+            spacing: Kirigami.Units.smallSpacing
             visible: trayIcon.hasStickyAlerts
-
-            // Helper: count fans per state
-            function countByState(stateName) {
-                var count = 0
-                for (var i = 0; i < fanListModel.rowCount(); i++) {
-                    var idx = fanListModel.index(i, 0)
-                    if (fanListModel.data(idx, FanListModel.StateRole) === stateName) {
-                        count++
-                    }
-                }
-                return count
-            }
-
-            function countHighTempAlerts() {
-                var count = 0
-                for (var i = 0; i < fanListModel.rowCount(); i++) {
-                    var idx = fanListModel.index(i, 0)
-                    var state = fanListModel.data(idx, FanListModel.StateRole)
-                    var ht = fanListModel.data(idx, FanListModel.HighTempAlertRole)
-                    if (state === "managed" && ht) count++
-                }
-                return count
-            }
 
             // Fallback alert
             Rectangle {
@@ -151,7 +155,7 @@ Rectangle {
                 Controls.Label {
                     id: fallbackLabel
                     anchors.centerIn: parent
-                    text: i18n("Fallback active — %1 fans driven to safe output").arg(trayPopover.countByState("fallback"))
+                    text: i18n("Fallback active — %1 fans driven to safe output", trayPopover.countByState("fallback"))
                     color: Kirigami.Theme.negativeTextColor
                     font.weight: Font.DemiBold
                     font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
@@ -162,7 +166,7 @@ Rectangle {
             Rectangle {
                 Layout.fillWidth: true
                 height: degradedLabel.height + Kirigami.Units.smallSpacing * 2
-                color: Kirigami.Theme.warningTextColor
+                color: Kirigami.Theme.neutralTextColor
                 opacity: 0.15
                 radius: Kirigami.Units.smallSpacing
                 visible: trayPopover.countByState("degraded") > 0
@@ -170,8 +174,8 @@ Rectangle {
                 Controls.Label {
                     id: degradedLabel
                     anchors.centerIn: parent
-                    text: i18n("Fan control degraded — %1 fans").arg(trayPopover.countByState("degraded"))
-                    color: Kirigami.Theme.warningTextColor
+                    text: i18n("Fan control degraded — %1 fans", trayPopover.countByState("degraded"))
+                    color: Kirigami.Theme.neutralTextColor
                     font.weight: Font.DemiBold
                     font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
                 }
@@ -189,7 +193,7 @@ Rectangle {
                 Controls.Label {
                     id: highTempLabel
                     anchors.centerIn: parent
-                    text: i18n("High temperature — %1 fans above target").arg(trayPopover.countHighTempAlerts())
+                    text: i18n("High temperature — %1 fans above target", trayPopover.countHighTempAlerts())
                     color: Kirigami.Theme.negativeTextColor
                     font.weight: Font.DemiBold
                     font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
@@ -246,8 +250,8 @@ Rectangle {
 
         RowLayout {
             Layout.fillWidth: true
-            Layout.topMargin: Kirigami.Units.smSpacing
-            spacing: Kirigami.Units.mdSpacing
+            Layout.topMargin: Kirigami.Units.smallSpacing
+            spacing: Kirigami.Units.mediumSpacing
 
             Controls.Button {
                 text: i18n("Open Fan Control")

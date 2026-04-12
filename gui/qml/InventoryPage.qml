@@ -20,104 +20,86 @@ Kirigami.ScrollablePage {
         spacing: Kirigami.Units.largeSpacing
         width: inventoryPage.width
 
-        // Sensors section
-        Kirigami.AbstractCard {
-            Layout.fillWidth: true
-            visible: sensorListModel.rowCount() > 0
+        Kirigami.Heading {
+            text: i18n("Sensors")
+            level: 2
+            visible: sensorRepeater.count > 0
+        }
 
-            header: Kirigami.Heading {
-                text: i18n("Sensors")
-                level: 2
-            }
+        Repeater {
+            id: sensorRepeater
+            model: sensorListModel
 
-            ColumnLayout {
-                id: sensorList
-                spacing: Kirigami.Units.smallSpacing
+            delegate: Kirigami.AbstractCard {
+                Layout.fillWidth: true
+                contentItem: RowLayout {
+                    spacing: Kirigami.Units.mediumSpacing
 
-                Repeater {
-                    model: sensorListModel
-
-                    delegate: Kirigami.AbstractCard {
+                    Kirigami.TitleSubtitle {
+                        title: displayName
+                        subtitle: sensorId
                         Layout.fillWidth: true
-                        contentItem: RowLayout {
-                            spacing: Kirigami.Units.mdSpacing
+                    }
 
-                            Kirigami.TitleSubtitle {
-                                title: model.displayName
-                                subtitle: model.sensorId
-                                Layout.fillWidth: true
-                            }
-
-                            Kirigami.TitleSubtitle {
-                                title: {
-                                    var mdeg = model.temperatureMillidegrees;
-                                    return mdeg > 0 ? (mdeg / 1000.0).toFixed(1) + " °C" : "—";
-                                }
-                                subtitle: model.deviceName
-                            }
+                    Kirigami.TitleSubtitle {
+                        title: {
+                            var mdeg = temperatureMillidegrees;
+                            return mdeg > 0 ? (mdeg / 1000.0).toFixed(1) + " °C" : "—";
                         }
+                        subtitle: deviceName
                     }
                 }
             }
         }
 
-        // Fans section
-        Kirigami.AbstractCard {
-            Layout.fillWidth: true
-            visible: fanListModel.rowCount() > 0
+        Kirigami.Heading {
+            text: i18n("Fans")
+            level: 2
+            visible: fanRepeater.count > 0
+        }
 
-            header: Kirigami.Heading {
-                text: i18n("Fans")
-                level: 2
-            }
+        Repeater {
+            id: fanRepeater
+            model: fanListModel
 
-            ColumnLayout {
-                id: fanList
-                spacing: Kirigami.Units.smallSpacing
+            delegate: Kirigami.AbstractCard {
+                Layout.fillWidth: true
+                contentItem: RowLayout {
+                    spacing: Kirigami.Units.mediumSpacing
 
-                Repeater {
-                    model: fanListModel
-
-                    delegate: Kirigami.AbstractCard {
+                    Kirigami.TitleSubtitle {
+                        title: displayName
+                        subtitle: fanId
                         Layout.fillWidth: true
-                        contentItem: RowLayout {
-                            spacing: Kirigami.Units.mdSpacing
+                    }
 
-                            Kirigami.TitleSubtitle {
-                                title: model.displayName
-                                subtitle: model.fanId
-                                Layout.fillWidth: true
+                    StateBadge {
+                        fanState: model.state
+                        highTempAlert: highTempAlert
+                    }
+
+                    ColumnLayout {
+                        spacing: 0
+
+                        Controls.Label {
+                            text: {
+                                var modes = controlMode;
+                                return modes ? modes : i18n("No control mode");
                             }
+                            font: Kirigami.Theme.smallFont
+                        }
 
-                            StateBadge {
-                                fanState: model.state
-                                highTempAlert: model.highTempAlert
-                            }
+                        Controls.Label {
+                            text: hasTach ? i18n("Has tach") : i18n("No tach")
+                            font: Kirigami.Theme.smallFont
+                            color: hasTach ? Kirigami.Theme.positiveTextColor : Kirigami.Theme.disabledTextColor
+                        }
 
-                            ColumnLayout {
-                                spacing: 0
-
-                                Controls.Label {
-                                    text: {
-                                        var modes = model.controlMode;
-                                        return modes ? modes : i18n("No control mode");
-                                    }
-                                    font: Kirigami.Theme.smallFont
-                                }
-
-                                Controls.Label {
-                                    text: model.hasTach ? i18n("Has tach") : i18n("No tach")
-                                    font: Kirigami.Theme.smallFont
-                                    color: model.hasTach ? Kirigami.Theme.positiveTextColor : Kirigami.Theme.disabledTextColor
-                                }
-
-                                Controls.Label {
-                                    text: model.supportReason || ""
-                                    visible: model.supportReason.length > 0
-                                    font: Kirigami.Theme.smallFont
-                                    color: Kirigami.Theme.disabledTextColor
-                                }
-                            }
+                        Controls.Label {
+                            text: supportReason || ""
+                            visible: supportReason.length > 0
+                            font: Kirigami.Theme.smallFont
+                            color: Kirigami.Theme.disabledTextColor
                         }
                     }
                 }

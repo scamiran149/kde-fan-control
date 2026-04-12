@@ -17,6 +17,7 @@
 class SensorListModel : public QAbstractListModel
 {
     Q_OBJECT
+    Q_ENUMS(Roles)
 
 public:
     enum Roles {

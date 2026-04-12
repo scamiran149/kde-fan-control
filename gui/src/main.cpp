@@ -10,6 +10,8 @@
 #include <QIcon>
 #include <QDebug>
 
+#include <klocalizedqmlcontext.h>
+
 #include "daemon_interface.h"
 #include "status_monitor.h"
 #include "models/fan_list_model.h"
@@ -47,6 +49,14 @@ int main(int argc, char *argv[])
                               Qt::QueuedConnection);
 
     QQmlApplicationEngine engine;
+    auto *localizedContext = KLocalization::setupLocalizedContext(&engine);
+    localizedContext->setTranslationDomain(QStringLiteral("kde-fan-control"));
+
+    // Register enum types for QML access.
+    qmlRegisterUncreatableType<FanListModel>("org.kde.fancontrol", 1, 0,
+        "FanListModel", QStringLiteral("Cannot create FanListModel in QML"));
+    qmlRegisterUncreatableType<SensorListModel>("org.kde.fancontrol", 1, 0,
+        "SensorListModel", QStringLiteral("Cannot create SensorListModel in QML"));
 
     // Register context properties for QML access.
     engine.rootContext()->setContextProperty(QStringLiteral("daemonInterface"), &daemonInterface);
@@ -59,7 +69,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("notificationHandler"), &notificationHandler);
 
     // Load the main QML file from the QML module resource.
-    const QUrl url(QStringLiteral("qrc:/qt/qml/org/kde/fancontrol/qml/Main.qml"));
+    const QUrl url(QStringLiteral("qrc:/org/kde/fancontrol/qml/Main.qml"));
 
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreated,
                      &app, [url](QObject *obj, const QUrl &objUrl) {
