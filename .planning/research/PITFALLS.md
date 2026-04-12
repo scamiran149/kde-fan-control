@@ -1,279 +1,460 @@
-# Domain Pitfalls
+# Domain Pitfalls: Packaging & System Integration
 
-**Domain:** Linux desktop fan-control daemon
-**Researched:** 2026-04-10
-**Overall confidence:** MEDIUM-HIGH
+**Domain:** Adding systemd integration, .deb packaging, polkit policies, .desktop files, and DBus service installation to an existing Rust/Qt6 Linux desktop fan-control application
+**Researched:** 2026-04-11
+**Overall confidence:** HIGH
 
 ## Critical Pitfalls
 
-### Pitfall 1: Relying on “clean shutdown” for fail-safe fan recovery
-**What goes wrong:** The daemon crashes, deadlocks, or is watchdog-killed, but the recovery path only exists inside the daemon or in a clean-stop path. Fans stay at a stale low PWM instead of being forced safe.
+### Pitfall 1: `ProtectSystem=strict` and `PrivateDevices=yes` silently block hwmon writes
 
-**Why it happens:** systemd `ExecStop=` is not the right crash-only safety mechanism, and it only runs after a successful start. A daemon cannot recover hardware state after its own process is already wedged or gone.
+**What goes wrong:** The DAEMON unit file includes systemd hardening directives copied from reference services (power-profiles-daemon, fancontrol), but `ProtectSystem=strict` makes `/sys` read-only and `PrivateDevices=yes` creates a private `/dev` namespace. The daemon starts successfully, can bind its DBus name, but later hwmon writes fail silently or return EPERM. Fans appear to be managed in the UI but control is actually dead.
 
-**Consequences:** Thermal runaway risk; safety claims become false exactly in the failure mode that matters most.
+**Why it happens:** Debian's `fancontrol` package uses `ProtectSystem=strict` + `PrivateDevices=yes` but only reads config — it does NOT write sysfs at runtime in a way that conflicts. The Arch/Debian fancontrol unit works because it only writes to `/run` for PID tracking; the actual PWM writes go through `/sys/class/hwmon` which fancontrol accesses as root before `ProtectSystem=strict` is deeply applied. But the existing fancontrol service hardening is a model people copy without understanding what paths it actually needs.
 
-**Warning signs:**
-- Safety design says “on exit we will set max fan” but only inside the main process
-- Service unit has no `WatchdogSec=` and no `Restart=on-failure`
-- No out-of-process fallback helper for crash cleanup
-- Testing only covers `systemctl stop`, not `kill -9`, segfault, startup failure, or watchdog timeout
-
-**Prevention strategy:**
-- Treat fail-safe recovery as a separate mechanism, not daemon business logic
-- Use a supervised system service (`Type=notify` or `Type=dbus`), `Restart=on-failure`, and `WatchdogSec=`
-- Add an external recovery path that can still run after unexpected exit, e.g. `ExecStopPost=` helper that forces enrolled channels to known-safe maximum/manual-safe state
-- Persist the exact set of daemon-owned channels so recovery code knows what to restore
-- Test at least: startup failure, unexpected crash, watchdog expiry, stop timeout, and reboot during active control
-
-**Which phase should address it:** Phase 1 — daemon lifecycle and safety contract
-
-### Pitfall 2: Identifying hardware by unstable `hwmonN` paths
-**What goes wrong:** A saved configuration points to `hwmon2/pwm1` and next boot that path is a different device. The daemon drives the wrong controller or refuses to start.
-
-**Why it happens:** Kernel docs explicitly warn that sysfs layout details and classification paths are not stable; `hwmonN` numbering is not a durable identity.
-
-**Consequences:** Wrong-fan control, silent misconfiguration after reboot, or unsafe boot-time auto-management.
+**Consequences:** Daemon appears healthy but cannot control fans. Thermal risk. Very difficult to diagnose because the service shows "active (running)" and DBus responds to queries. Writable `/sys` failures only surface when a user tries to enroll a fan or when a control loop first writes PWM.
 
 **Warning signs:**
-- Config stores only `/sys/class/hwmon/hwmonX/...`
-- No DEVPATH/name validation at load time
-- Discovery code assumes `/sys/class/hwmon` numbering is persistent
-- Users report config “works until reboot/kernel update”
+- Service unit has `ProtectSystem=strict` without `ReadWritePaths=/sys/class/hwmon`
+- Service unit has `PrivateDevices=yes` but needs to write sysfs
+- Testing only checks DBus connectivity, not actual fan control write success
+- Daemon logs show "permission denied" on `/sys/class/hwmon/hwmon*/pwm*` writes
 
 **Prevention strategy:**
-- Store stable identity using real device devpath plus chip name/labels, not transient class numbering alone
-- Resolve symlinks to real `/sys/devices/...` paths before persisting identity
-- On load, verify both physical device path and expected chip/controller names before reenrolling
-- Refuse auto-start if identity confidence drops; fall back to BIOS/manual state instead of guessing
-- Mirror `fancontrol`’s defensive idea of checking `DEVPATH`/`DEVNAME` before applying config
+- Explicitly add `ReadWritePaths=/sys/class/hwmon` to the service unit if using `ProtectSystem=strict`
+- Do NOT use `PrivateDevices=yes` — it creates a private `/dev` namespace that blocks access to device sysfs nodes; real hwmon control needs real device access
+- Test the packaged service end-to-end: not just "service starts" but "daemon can enroll and control a fan"
+- Start with minimal hardening and add directives one at a time, testing each with real hwmon writes
+- Consider using `ProtectSystem=full` (which leaves `/sys` writable) instead of `strict` if the full hardening matrix is hard to validate
 
-**Which phase should address it:** Phase 1 — hardware discovery and persistence model
+**Which phase should address it:** Phase implementing the systemd unit file — test real hwmon writes before declaring the unit file done
 
-### Pitfall 3: Assuming writable PWM means “safe supported hardware”
-**What goes wrong:** The daemon exposes enrollment for channels that are writable but not safely controllable in practice: no trustworthy temperature source, no safe maximum path, unclear mapping, broken tach, EC/firmware override, or partial hwmon exposure.
+---
 
-**Why it happens:** Kernel hwmon attributes are heavily optional; motherboard wiring is inconsistent; temperature/fan numbering is not semantically standardized.
+### Pitfall 2: DBus service activation file vs systemd `Type=dbus` mismatch
 
-**Consequences:** Users enroll unsupported hardware, lose BIOS behavior, or gain false confidence in control that is only partially real.
+**What goes wrong:** The DBus `.service` activation file (in `/usr/share/dbus-1/system-services/`) has `Exec=` pointing to the daemon binary but `SystemdService=` pointing to a nonexistent or differently-named systemd unit. Or, the systemd unit uses `Type=notify` but the activation file doesn't list `SystemdService=` at all, so DBus activation tries to launch the binary directly instead of going through systemd.
+
+**Why it happens:** There are two independent activation paths — DBus bus activation and systemd service activation — and they must agree. If the DBus `.service` file has `SystemdService=org.kde.FanControl.service` but the actual systemd unit is named `kde-fan-control-daemon.service`, DBus activation fails silently and falls back to `Exec=` (if set), or just fails entirely. The reference pattern from UDisks2, Avahi, and PowerProfiles shows the correct structure but there are subtle naming traps.
+
+**Consequences:** On-demand daemon start (when GUI launches but daemon isn't running) fails. Users see "daemon not reachable" errors. The only workaround is manually running `systemctl start`.
 
 **Warning signs:**
-- Enrollment UI treats all discovered PWM outputs as equal
-- No validation that manual control can be entered and maximum can be enforced
-- No distinction between “readable”, “writable”, and “safe to own continuously”
-- Fault/alarm attributes are ignored
+- DBus `.service` file `SystemdService=` name doesn't match the installed systemd unit filename
+- The systemd unit `Alias=` doesn't create a `dbus-<BusName>.service` symlink
+- Testing only covers `systemctl start` but never tests launching from GUI with daemon stopped
+- The `Name=` field in the DBus `.service` file doesn't match the bus name the daemon actually requests
 
 **Prevention strategy:**
-- Introduce capability tiers: observable, writable, safe-for-daemon-control, unsupported
-- Require a positive safety check before enrollment: can enter manual mode, can write output, can force safe high output, can map to at least one trusted sensor path
-- Consume `*_fault`, `*_alarm`, and missing-attribute states as safety signals, not cosmetic metadata
-- Keep BIOS-controlled fans opt-in only; never auto-adopt them because they are writable
-- For ambiguous channels, expose read-only diagnostics and explicitly refuse enrollment
+- The DBus `.service` file name MUST match the bus name: `org.kde.FanControl.service` for bus name `org.kde.FanControl`
+- Set `SystemdService=` in the DBus `.service` file to point to the exact systemd unit filename
+- Set `Exec=/bin/false` in the activation file when `SystemdService=` is used (to prevent direct binary launch, as Avahi and PowerProfiles-daemon do)
+- Use `Type=dbus` + `BusName=org.kde.FanControl` in the systemd unit for cleanest bus activation integration, OR use `Type=notify` and add an `Alias=dbus-org.kde.FanControl.service` to the systemd unit so bus activation resolves correctly
+- Test on-demand activation: stop the daemon, launch the GUI, verify the daemon starts and the GUI connects
 
-**Which phase should address it:** Phase 1 — hardware support matrix and enrollment rules
+**Which phase should address it:** Phase implementing DBus service installation + systemd unit — test bus activation explicitly
 
-### Pitfall 4: Control loop tuned faster than the hardware can report meaningful data
-**What goes wrong:** PID runs at a high frequency against stale or quantized temperature readings. The derivative term amplifies noise, the integral term winds up, and PWM oscillates audibly while temperatures barely improve.
+---
 
-**Why it happens:** hwmon devices expose `update_interval`; thermal zones may have their own polling cadence; many sensors update slowly relative to software loops. Some temperature channels also need user-space conversion/labeling, and not all data is equally trustworthy.
+### Pitfall 3: Polkit policy file installed but not wired into daemon authorization
 
-**Consequences:** Fan hunting, acoustic annoyance, poor thermal stability, unstable auto-tuning, and user distrust of PID.
+**What goes wrong:** A `.policy` file is installed to `/usr/share/polkit-1/actions/` with correct action IDs, but the daemon's authorization check still uses the existing UID==0 check from `require_authorized()`. The polkit dialog never appears because no code calls `polkit`'s `CheckAuthorization`. Non-root users try to use the GUI for write operations and get `AccessDenied` errors even though the polkit policy says `auth_admin_keep`.
+
+**Why it happens:** The existing codebase at `crates/daemon/src/main.rs:789` explicitly documents: "This function is explicitly structured so that a future `polkit` check can replace the UID comparison without changing the DBus method contract." But installing the `.policy` file is NOT the same as wiring the polkit CheckAuthorization call. The `.policy` file declares actions; the daemon must actively check them. There is a common misconception that polkit "automatically" intercepts DBus method calls — it does not. The DAEMON must opt in.
+
+**Consequences:** Polkit appears to be installed but is completely non-functional. GUI users cannot perform write operations without running as root. Users may try `sudo` or `pkexec` workarounds that bypass the designed flow. The authorization UX remains the same as before the polkit work.
 
 **Warning signs:**
-- PID tick interval chosen arbitrarily (e.g. 50–100 ms)
-- D term enabled before measurement noise is characterized
-- Temperature graph shows stepwise plateaus while PWM chatters rapidly
-- Integrator grows while output is already clamped at min/max
+- `.policy` file is installed but daemon code only checks `uid != 0`
+- No zbus/bustlec calls to `org.freedesktop.PolicyKit1.Authority.CheckAuthorization`
+- GUI error messages say "privileged operations require root access" instead of triggering an auth dialog
+- polkit agent logs show no authorization checks for the action IDs
 
 **Prevention strategy:**
-- Make control cadence sensor-aware: never sample faster than hardware updates can justify
-- Implement output clamps, anti-windup, deadband/hysteresis, and slew-rate limiting from day one
-- Default to PI or even bounded linear control first; keep D conservative and optional
-- Smooth measurements deliberately and document control latency tradeoffs
-- Read back actual sensor cadence during discovery and store it with the control model
+- Replace `require_authorized()` body with a polkit `CheckAuthorization` call using `zbus` to talk to `org.freedesktop.PolicyKit1` on the system bus
+- The daemon must extract caller PID + UID from the DBus message header and pass them as the `subject` to `CheckAuthorization`
+- Set the `ALLOW_INTERACTIVE_AUTHORIZATION` flag on DBus method calls from the GUI side so the daemon knows it can prompt the user
+- Map each privileged DBus method to a specific polkit action ID (e.g., `org.kde.FanControl.enroll-fan`, `org.kde.FanControl.apply-config`)
+- Test from a non-root user session: GUI click should trigger a polkit authentication dialog
+- Keep the UID==0 fallback for direct CLI use where no polkit agent is available
 
-**Which phase should address it:** Phase 2 — control-loop core before auto-tuning
+**Which phase should address it:** Phase implementing polkit — daemon code change is mandatory, not just file installation
 
-### Pitfall 5: Forgetting that some “temperature” channels are not millidegrees Celsius
-**What goes wrong:** The daemon assumes every `temp*_input` is millidegrees C, but some chips expose thermistor-derived temperatures as millivolts and rely on user-space conversion.
+---
 
-**Why it happens:** hwmon mostly looks uniform, but the kernel docs explicitly call out exceptions where temperature channels are handled as voltage channels by the driver.
+### Pitfall 4: `ExecStopPost=` not configured for crash-safe fan fallback
 
-**Consequences:** Wildly wrong setpoints, nonsense auto-tuning, or unsafe low-fan behavior because the control loop is built on mis-scaled data.
+**What goes wrong:** The service unit relies on `ExecStop=` for cleanup, but `ExecStop=` only runs after a **successful** start. If the daemon crashes during startup, segfaults, or is killed by the watchdog, `ExecStop=` is skipped entirely. Previously-controlled fans stay at their last PWM value (possibly low).
+
+**Why it happens:** The systemd docs are explicit: "commands specified in ExecStop= are only executed when the service started successfully first. They are not invoked if the service was never started at all, or in case its start-up failed. Use ExecStopPost= to invoke commands when a service failed to start up correctly." This is a very common misunderstanding.
+
+**Consequences:** Thermal risk — daemon-controlled fans stay at whatever PWM value they were at when the daemon died, with no recovery. This directly undermines the fail-safe design.
 
 **Warning signs:**
-- All `temp*` files are parsed with one fixed unit path and no device-specific metadata
-- Sensor labels and units are not surfaced in diagnostics
-- Same board works under `sensors`, but daemon reports implausible temperatures
+- Service unit has `ExecStop=` but no `ExecStopPost=`
+- Recovery code lives only inside the daemon's own shutdown path
+- Testing only covers `systemctl stop` (clean shutdown), not `kill -9` or watchdog timeout
+- No persisted record of which fans need recovery (the daemon's in-memory state is gone)
 
 **Prevention strategy:**
-- Separate raw sensor ingestion from normalized thermal signals
-- Keep unit metadata explicit per sensor channel
-- Compare discovered channels against known labels/conversions where available
-- Refuse control on channels with ambiguous units until normalized confidently
+- Install `ExecStopPost=` with a minimal, standalone helper script that reads the persisted enrolled-fan list and forces each enrolled channel to safe-max
+- `ExecStopPost=` runs in ALL scenarios — clean stop, crash, startup failure, watchdog kill
+- The helper must not depend on the daemon being alive or reachable
+- Persist the set of daemon-owned fans to a known path (e.g., `/var/lib/kde-fan-control/enrolled.json`) so the recovery tool can find it
+- Test: start daemon, enroll a fan, `kill -9` the daemon, verify fans go to safe-max
+- Test: `TimeoutStartSec=` expiry during a wedged startup, verify `ExecStopPost=` runs
 
-**Which phase should address it:** Phase 1 — sensor normalization and labeling
+**Which phase should address it:** Phase implementing systemd unit — this IS the safety contract
 
-### Pitfall 6: Writing malformed sysfs values and accidentally sending fans to 0
-**What goes wrong:** Bad parsing, empty strings, locale issues, or invalid user input end up being written to sysfs. hwmon docs note that non-numeric strings are interpreted as `0` when kernel code parses them.
+---
 
-**Why it happens:** Developers assume sysfs writes fail cleanly on malformed input; some attributes clamp or coerce values instead.
+### Pitfall 5: `.deb` conffile handling silently overwrites daemon config on upgrade
 
-**Consequences:** Accidental fan stop, wrong mode switch, or silent mismatch between requested and actual output.
+**What goes wrong:** The daemon's TOML config file is installed as a conffile in `/etc/kde-fan-control/config.toml`. On package upgrade, `dpkg` sees the config as a conffile and either silently installs the new version (if the user never edited it) or prompts with a confusing diff. If the user accepts the maintainer version, their enrolled fan configuration is wiped. If they reject it, the new config schema changes may not take effect.
+
+**Why it happens:** Debian's conffile mechanism is designed for files the admin edits, but a daemon-owned active config has different semantics — it's BOTH the package's default template AND a user-modified live document. The `dpkg` conffile prompt on upgrade is confusing for desktop users and can lead to data loss either way.
+
+**Consequences:** Users lose their fan configuration on package upgrades. Or, upgrades fail because config schema changed and the old config won't parse. Support burden and user distrust.
 
 **Warning signs:**
-- UI/CLI forwards strings directly to sysfs without strict typed validation
-- No read-after-write verification
-- No clamping in daemon before touching hardware
-- Error handling assumes `EINVAL` will always catch bad writes
+- Config installed to `/etc/` and marked as a conffile
+- No config migration code in `preinst`/`postinst` maintainer scripts
+- No version field in the config schema
+- Package upgrade tests only check install/remove, not upgrade
 
 **Prevention strategy:**
-- Centralize all hardware writes in a typed validation layer
-- Clamp and normalize values in userspace before any write
-- Perform read-after-write verification for mode switches and critical outputs
-- Reject partial/invalid config updates before they reach hardware
+- Do NOT mark the daemon's live config as a dpkg conffile
+- Install a default/template config to `/usr/share/kde-fan-control/config.default.toml` and let the daemon copy it to its runtime location on first start
+- Use `/var/lib/kde-fan-control/` for the active config and `/etc/kde-fan-control/` only for admin overrides (if any)
+- Include a config schema version field from day one: `config_version = 1`
+- Write a `preinst` or `postinst` migration that can transform v1 → v2 config if schema changes
+- Test upgrade path: install old .deb, create config, upgrade to new .deb, verify config preserved
 
-**Which phase should address it:** Phase 1 — hardware write abstraction
+**Which phase should address it:** Phase implementing .deb packaging — config handling is a packaging design decision
+
+---
+
+### Pitfall 6: DBus policy file install location confusion (`/etc/` vs `/usr/share/`)
+
+**What goes wrong:** The DBus policy `.conf` file is installed to `/etc/dbus-1/system.d/` by the .deb package. But on many modern systems, `dbus-daemon` loads policies from `/usr/share/dbus-1/system.d/` first, and `/etc/dbus-1/system.d/` is reserved for admin overrides. If a distro or a future admin also installs a policy to `/usr/share/`, the two files conflict or the wrong one wins. Worse, the existing file at `/etc/dbus-1/system.d/org.kde.FanControl.conf` is already present (from manual install), and a .deb package installing to the same path creates a conffile conflict.
+
+**Why it happens:** The DBus spec and `dbus-daemon` implementation have evolved their policy search paths. Modern `dbus-daemon 1.12+` loads from both `_/usr/share/dbus-1/system.d/_` (packaged) and `/etc/dbus-1/system.d/` (admin), with `/etc/` winning on conflicts. But many .deb packages still install to `/etc/` because that's the older convention. The project's existing manual DBus config is already in `/etc/dbus-1/system.d/`.
+
+**Consequences:** Duplicate or conflicting policy files. Package upgrade conflicts with manually installed files. Admin customizations overwritten. DBus policy behavior unpredictable because load order varies.
+
+**Warning signs:**
+- Package installs to `/etc/dbus-1/system.d/` but the reference convention is `/usr/share/dbus-1/system.d/`
+- Existing manual file at `/etc/dbus-1/system.d/org.kde.FanControl.conf` from pre-packaging era
+- No `dpkg` diversions or handling for existing manual config files
+- Corectrl (closest analog) installs to `/usr/share/dbus-1/system.d/`
+
+**Prevention strategy:**
+- Install DBus `.conf` policy to `/usr/share/dbus-1/system.d/org.kde.FanControl.conf` — this is the packaged-policy location (confirmed by examining corectrl, power-profiles-daemon, NetworkManager packages on this system)
+- Reserve `/etc/dbus-1/system.d/` for admin overrides
+- In `preinst` or `postinst`, check for and remove or redirect any previously manually-installed `/etc/dbus-1/system.d/org.kde.FanControl.conf` to avoid conflicts
+- This matches what corectrl does on this system: `/usr/share/dbus-1/system.d/org.corectrl.helper.conf`
+
+**Which phase should address it:** Phase implementing DBus policy installation + .deb packaging
+
+---
+
+### Pitfall 7: No `enable` in postinst — daemon must be manually started after install
+
+**What goes wrong:** The .deb package installs the systemd unit but doesn't call `systemctl enable` or `systemctl start` in `postinst`. After install, the daemon doesn't run. The GUI launches, can't reach the daemon, and shows an error. Users have to manually figure out they need `sudo systemctl enable --now kde-fan-control-daemon.service`.
+
+**Why it happens:** Debian policy historically discourages auto-enabling services in `postinst`. The `dh_installsystemd` helper with default debhelper compatibility level does NOT enable services by default. But for a desktop fan control app, the daemon needs to be running for the product to work at all.
+
+**Consequences:** Broken out-of-box experience. Users install the package and the app doesn't work. Support burden. Users may try to start the daemon manually with `pkexec` or `sudo` instead of through systemctl.
+
+**Warning signs:**
+- Package uses `dh_installsystemd` with default compat level (no auto-enable)
+- No `deb-systemd-invoke enable` in `postinst`
+- No documentation telling users to enable the service
+- GUI has no on-demand daemon start facility
+
+**Prevention strategy:**
+- Decide explicitly: should the service auto-enable after install? For a fan-control daemon that owns safety-critical hardware, auto-enable is justified
+- If auto-enabling, use debhelper compat level 13+ which supports `dh_installsystemd --enable` and call `deb-systemd-invoke enable <unit>` in `postinst`
+- As a fallback, the GUI should detect "daemon not reachable" and offer a one-click polkit-gated "Start Daemon" button that calls `systemctl start` via polkit
+- Document the `systemctl enable --now` step prominently in README and GUI help
+- The `install.sh` fallback should always call `systemctl enable --now`
+
+**Which phase should address it:** Phase implementing .deb packaging + GUI on-demand start
+
+---
 
 ## Moderate Pitfalls
 
-### Pitfall 7: Fighting the kernel thermal framework, firmware, or the EC
-**What goes wrong:** The daemon’s PID loop competes with ACPI/thermal-zone policy, embedded controller logic, or chipset auto mode. Output appears to “bounce back” or temperature control is inconsistent.
+### Pitfall 8: `.desktop` file missing `StartupNotify=false` and tray icon behavior
 
-**Why it happens:** Linux already models thermal zones and cooling devices; some platforms retain independent firmware behavior even when user space writes hwmon controls.
+**What goes wrong:** The `.desktop` file for the GUI doesn't set `StartupNotify=false`. When users launch the app, their desktop environment shows a launching spinner/cursor for 5-10 seconds. Since the GUI is a tray app that may start minimized, the spinner is confusing. Or, the `.desktop` file is placed in `/usr/share/applications/` but there's no autostart entry, so the tray app doesn't start on login.
 
-**Consequences:** Oscillation, confusing bug reports, “manual mode doesn’t stick,” and false blame on PID math.
-
-**Warning signs:**
-- PWM value changes but actual RPM or thermal behavior ignores it
-- Control works briefly, then snaps back
-- Same fan appears in both hwmon and thermal/cooling-device views
+**Why it happens:** `.desktop` files have many keywords and `StartupNotify` is easy to overlook. Autostart requires a separate `.desktop` file in `/etc/xdg/autostart/` with `X-GNOME-Autostart-enabled=true` or KDE's `X-KDE-autostart-after=panel` directives.
 
 **Prevention strategy:**
-- Detect and surface ownership conflicts during discovery
-- Explicitly switch to manual mode only for enrolled fans, and confirm the switch stuck
-- Document unsupported platforms where EC/firmware keeps final control
-- Prefer refusal over pretending control exists
+- Set `StartupNotify=false` in the GUI `.desktop` file
+- Set `Terminal=false` and `Type=Application`
+- Use `Categories=System;Settings;` and appropriate `Keywords=`
+- For autostart, install a separate `org.kde.FanControl.desktop` to `/etc/xdg/autostart/` with `Hidden=false` and a `NotShowIn=` if needed for non-KDE environments
+- Embed icons via the icon naming spec (`Icon=org.kde.FanControl`) and install SVG icons to `/usr/share/icons/hicolor/scalable/apps/`
 
-**Which phase should address it:** Phase 1 — discovery, ownership, and support-policy phase
+**Which phase should address it:** Phase implementing .desktop files
 
-### Pitfall 8: Boot-time auto-management before devices are actually ready
-**What goes wrong:** The service starts on boot, but target hwmon nodes are not populated yet, driver load order differs, or the device graph changed. The daemon applies a partial config or fails into an unsafe half-managed state.
+---
 
-**Why it happens:** Boot ordering is real, and systemd only guarantees what the unit declares. Hardware discovery can lag behind service startup.
+### Pitfall 9: CLI binary not in PATH or conflicts with existing `fancontrol` binary
 
-**Consequences:** Fans left in wrong mode after boot, flaky startup behavior, inconsistent bug reproduction.
+**What goes wrong:** The CLI binary (`kfc`) is compiled as a Rust binary but not placed in a PATH-visible location. Or it's installed to `/usr/local/bin/` which isn't on all users' PATH by default. Or, the binary naming conflicts with an existing tool.
 
-**Warning signs:**
-- Boot-only failures that disappear when restarting the service manually
-- Missing channels on first start but present seconds later
-- Auto-start logic applies what it found instead of requiring full validation
+**Why it happens:** Rust's `cargo install` puts binaries in `~/.cargo/bin/` by default, which is not in the system PATH. Debian packages should install to `/usr/bin/`. The name `kfc` is short and could theoretically collide with another tool.
 
 **Prevention strategy:**
-- Treat boot activation as a reconciliation step, not blind config replay
-- Retry discovery for a bounded window, then fail closed
-- Require full identity validation before taking ownership of any enrolled fan
-- If validation fails, keep or restore safe non-daemon state and log why
+- Install CLI binary to `/usr/bin/kfc` in the .deb
+- Install daemon binary to `/usr/libexec/kde-fan-control/kde-fan-control-daemon` (matching the pattern used by corectrl, UDisks2, power-profiles-daemon — daemons that are not user-facing go in `/usr/libexec/`)
+- Never install the daemon to `/usr/bin/` — it should not be in users' PATH since it's managed by systemd
+- Add a `Provides:` and `Conflicts:` field in the .deb if `kfc` collides with anything
+- The `install.sh` should also use these paths
 
-**Which phase should address it:** Phase 1 — boot integration and activation semantics
+**Which phase should address it:** Phase implementing .deb packaging
 
-### Pitfall 9: Split-brain between daemon, GUI, and CLI
-**What goes wrong:** Frontends cache config, write files directly, or infer hardware state independently. DBus becomes only “one way” to talk to the daemon instead of the single source of truth.
+---
 
-**Why it happens:** It is tempting to let each client manipulate persistence or discover hardware locally for convenience.
+### Pitfall 10: `install.sh` fallback runs as root without proper guards
 
-**Consequences:** Conflicting state, stale UI, race conditions during edits, and support headaches.
+**What goes wrong:** The `install.sh` script is run with `sudo` but doesn't check for critical prerequisites (kernel hwmon support, udev rules, dbus daemon running, polkit installed). It succeeds partially and leaves the system in a broken state: unit installed but dbus policy missing, or binary installed but not executable, or systemd reloaded but the unit has errors.
 
-**Warning signs:**
-- GUI and CLI can disagree until refresh
-- More than one component writes persistent config
-- Clients refer to hwmon paths directly instead of opaque daemon-owned IDs
+**Why it happens:** Shell scripts for manual install tend to be written as "best effort" without transactional semantics. Partial install states are hard to recover from.
 
 **Prevention strategy:**
-- Make the daemon authoritative for discovery, persistence, validation, and runtime state
-- Expose opaque IDs and versioned DBus interfaces/object paths; do not leak raw sysfs assumptions into client contracts
-- Send change notifications/signals for every state transition the UI must reflect
-- Model edits as explicit transactions or replace-the-active-config operations
+- Start `install.sh` with prerequisite checks: `command -v systemctl`, `command -v dbus-daemon`, `command -v pkexec`, verify `/sys/class/hwmon` exists
+- Make the script idempotent: running it twice should produce the same result
+- If any step fails, print a clear diagnostic and exit non-zero
+- Provide an `uninstall.sh` that cleanly reverses all changes
+- Keep `install.sh` in sync with the .deb file list — the same files should be installed in the same locations
+- Do NOT use `set -e` blindly — some commands like `systemctl reload` may fail non-fatally in edge cases
 
-**Which phase should address it:** Phase 2 — DBus API and client contract
+**Which phase should address it:** Phase implementing install.sh
 
-### Pitfall 10: Auto-tuning without hard thermal guardrails
-**What goes wrong:** Auto-tune experiments drive fans too low or excite the system aggressively while trying to identify response curves.
+---
 
-**Why it happens:** Thermal systems are slow, noisy, and hardware-specific. “Basic auto-tune” sounds simple but is where safe operating envelopes are easiest to violate.
+### Pitfall 11: DBus interface methods rejected by overly restrictive policy `.conf`
 
-**Consequences:** Dangerous overshoot, user distrust, and support burden on edge-case hardware.
+**What goes wrong:** The DBus `.conf` policy file grants `send_destination` permission for the bus name, but some DBus daemons enforce policy at the interface level. If the policy only allows `send_destination="org.kde.FanControl"` without specifying interfaces, it works on most systems. But if the policy is too restrictive (e.g., only allowing specific interfaces), new polkit-related calls or properties methods may be blocked.
 
-**Warning signs:**
-- Auto-tune described as a generic one-click action
-- No max temperature abort, max duration, or min PWM floor during tuning
-- Tuning runs on every boot or in background continuously
+**Why it happens:** PowerProfiles-daemon's `.conf` explicitly allows `send_interface=net.hadess.PowerProfiles` plus the standard `Introspectable/Properties/Peer` interfaces. A copy-paste of that pattern with missing interface names would block access to new interfaces.
 
 **Prevention strategy:**
-- Ship manual/assisted tuning first; keep auto-tune opt-in
-- Enforce hard abort thresholds, bounded dwell times, and minimum safe outputs during tuning
-- Restrict v1 auto-tune to hardware that already passed safety validation
-- Log every tuning step so failures are diagnosable
+- Use the permissive pattern: `<allow send_destination="org.kde.FanControl"/>` in the default policy — this allows all interfaces on that destination, which is appropriate for a v1 app
+- Do NOT try to enumerate specific interfaces unless you have a strong security reason (interface-level filtering is for high-security contexts, not a desktop fan control app)
+- Always allow the standard interfaces: `org.freedesktop.DBus.Introspectable`, `org.freedesktop.DBus.Properties`, `org.freedesktop.DBus.Peer`
+- Root policy should `<allow own="org.kde.FanControl"/>` plus `<allow send_destination="org.kde.FanControl"/>`
 
-**Which phase should address it:** Phase 3 — tuning and advanced control research
+**Which phase should address it:** Phase implementing DBus policy installation
+
+---
+
+### Pitfall 12: zbus service name race condition on bus activation
+
+**What goes wrong:** When the daemon is DBus-activated (started on demand because a client called a method on its bus name), the name acquisition and interface setup can race. If the name is requested before interfaces are served, incoming method calls arrive before handlers are registered, and the calls fail with "Method not found" errors.
+
+**Why it happens:** This is a documented zbus pitfall. The zbus book explicitly warns: "When using ObjectServer, it is crucial to request the service name after setting up your interface handlers. If the service name is requested before the handlers are set up, incoming D-Bus messages might be lost."
+
+**Consequences:** Intermittent GUI failures on first launch when daemon starts via bus activation. "Method not found" errors that disappear on retry.
+
+**Warning signs:**
+- Daemon works when started via `systemctl start` but sometimes fails on bus activation
+- GUI sees "No such method" on first call after cold start
+- No `connection::Builder` pattern used for service setup
+
+**Prevention strategy:**
+- The existing code already uses `connection::Builder` with `.name().serve_at().build()` — this is the correct pattern
+- Verify that the builder chain completes before the event loop starts processing messages
+- Do NOT call `request_name()` separately after building the connection
+- Test specifically: stop the daemon, launch the GUI, verify the first DBus call succeeds without error
+
+**Which phase should address it:** Already handled in existing code — but re-verify during packaging after adding `SystemdService=` activation
+
+---
+
+### Pitfall 13: Polkit `auth_admin_keep` doesn't work headless / no authentication agent
+
+**What goes wrong:** The polkit default for write actions is `auth_admin_keep`, which triggers an authentication dialog. But if the user is in an SSH session, running under `sudo`, or using a minimal window manager without a polkit authentication agent, there's no agent to handle the prompt. The authorization check times out, and the operation fails with a confusing error.
+
+**Why it happens:** Polkit requires an authentication agent per session. KDE Plasma provides one (through `_polkitagent`), but SSH sessions, bare i3/sway, or minimal environments may not.
+
+**Prevention strategy:**
+- Set `allow_any=no` for write operations (non-local, non-active sessions denied)
+- Set `allow_inactive=no` for inactive sessions (e.g., SSH)
+- Set `allow_active=auth_admin_keep` for active local sessions with an agent
+- In the daemon, if `CheckAuthorization` fails with `org.freedesktop.PolicyKit1.Error.Failed` or similar, check if the caller is UID 0 and allow it directly (root bypass)
+- Document that SSH/CLI users should use `sudo kfc <command>` for write operations
+- Consider a `--allow-root` or `--no-polkit` CLI flag for scriptable use
+
+**Which phase should address it:** Phase implementing polkit
+
+---
+
+### Pitfall 14: `systemctl daemon-reload` not called after install or upgrade
+
+**What goes wrong:** The .deb installs or modifies a systemd unit file but doesn't trigger `systemctl daemon-reload`. systemd still has the old unit file cached. New changes (like adding `WatchdogSec=` or changing `ExecStart=`) don't take effect until the next reboot or manual `daemon-reload`. On upgrade, this means the old service definition (possibly with broken paths) runs.
+
+**Why it happens:** Debian's `dh_installsystemd` normally handles this, but custom packaging or `install.sh` may forget it.
+
+**Prevention strategy:**
+- Use `dh_installsystemd` in `debian/rules` — it handles `daemon-reload` automatically
+- In `install.sh`, call `systemctl daemon-reload` after installing unit files
+- In `postinst` maintainer script (if not using debhelper), explicitly call `deb-systemd-invoke daemon-reload` or `systemctl daemon-reload`
+- Test: install the .deb, verify `systemctl cat kde-fan-control-daemon.service` shows the new version immediately
+
+**Which phase should address it:** Phase implementing .deb packaging
+
+---
+
+### Pitfall 15: Icon not found — `.desktop` file references icon that doesn't exist
+
+**What goes wrong:** The `.desktop` file has `Icon=org.kde.FanControl` but no icon is installed at the expected XDG icon theme path. On KDE, the icon shows as a generic placeholder or broken image. The tray icon may fail entirely if KStatusNotifierItem can't find the icon.
+
+**Why it happens:** Icon installation requires placing correctly-named SVG or PNG files into `/usr/share/icons/hicolor/<size>/apps/` and then running `gtk-update-icon-cache` (or relying on KDE's icon cache). If the icon is embedded in a QML resource but not installed as a theme icon, it won't be found by the `.desktop` file or tray icon.
+
+**Prevention strategy:**
+- Install the application icon as an SVG to `/usr/share/icons/hicolor/scalable/apps/org.kde.FanControl.svg`
+- Also install PNG fallbacks for common sizes (16, 22, 32, 48, 64, 128) to `/usr/share/icons/hicolor/<size>x<size>/apps/org.kde.FanControl.png`
+- Run `gtk-update-icon-cache -f /usr/share/icons/hicolor/` in `postinst` and `postrm`
+- For the tray icon specifically: test that `KStatusNotifierItem` can find the icon by name — it may need the full path if the icon name is not in the theme
+- The `.desktop` file `Icon=` value should be just the icon name without extension: `Icon=org.kde.FanControl`
+
+**Which phase should address it:** Phase implementing .desktop files + packaging
+
+---
 
 ## Minor Pitfalls
 
-### Pitfall 11: No output deadband or minimum dwell time
-**What goes wrong:** Small temperature noise causes frequent tiny PWM changes that users hear immediately even if thermals are fine.
+### Pitfall 16: `NotifyAccess=all` vs `NotifyAccess=main` for sd-notify
+
+**What goes wrong:** The service unit sets `NotifyAccess=main` (or leaves it as the default), but the Rust daemon's notification socket is inherited by child tasks or subprocesses. If the watchdog ping comes from a non-main process, systemd ignores it and the watchdog triggers, killing the service.
 
 **Prevention strategy:**
-- Add deadband, output quantization, and minimum time between materially different fan commands
-- Optimize for acoustics and stability, not only temperature error minimization
+- Use `NotifyAccess=main` (the correct, most restrictive setting) and ensure all `sd_notify` / `sd-notify` calls come from the main process
+- The `sd-notify` crate should be called from the Tokio main task, not spawned tasks
+- Test with `WatchdogSec=` enabled and verify the daemon stays alive for >60 seconds
 
-**Warning signs:**
-- Logs show constant 1–2 PWM-step changes
-- Users complain about “nervous” fans while graphs look thermally stable
+**Which phase should address it:** Phase implementing systemd + sd-notify
 
-**Which phase should address it:** Phase 2 — control-loop polish
+---
 
-### Pitfall 12: Unversioned DBus API names and paths
-**What goes wrong:** The first shipped DBus contract becomes hard to change without breaking GUI/CLI compatibility.
+### Pitfall 17: `.deb` architecture mismatch — native Rust binary targets wrong arch
+
+**What goes wrong:** The .deb is built on an `x86_64` host but the `Cargo.toml` target or `CMake` build doesn't match the packaging architecture. Or the .deb declares `Architecture: all` when it contains compiled binaries that are arch-dependent.
 
 **Prevention strategy:**
-- Follow D-Bus naming conventions with reverse-DNS names and an explicit major version in interface/object-path naming from day one
+- Use `Architecture: amd64` (or the appropriate arch) for the .deb containing compiled Rust + C++ binaries
+- Use `dpkg --print-architecture` to detect the target arch during build
+- Cross-compilation is out of scope for v1 — build on the target architecture
+- The `install.sh` should detect architecture mismatch and warn
 
-**Warning signs:**
-- API names look like `org.example.FanControl` with no versioning plan
-- Client code depends on ad-hoc method shapes not intended as stable API
+**Which phase should address it:** Phase implementing .deb packaging
 
-**Which phase should address it:** Phase 2 — DBus API design
+---
+
+### Pitfall 18: Missing `postinst` trigger for DBus policy reload
+
+**What goes wrong:** After installing the DBus `.conf` file, the DBus daemon doesn't pick it up until restart. Some systems auto-reload; some don't. The daemon can't own its bus name because the policy isn't loaded yet.
+
+**Prevention strategy:**
+- Modern `dbus-daemon` (1.12+) watches policy directories and auto-reloads changes, but don't rely on this
+- In `postinst`, call `dbus-send --system --type=method_call --dest=org.freedesktop.DBus / org.freedesktop.DBus.ReloadConfig` or rely on `dh_install` + `dbus` trigger
+- Debian's `dbus` package provides a dpkg trigger that reloads policies automatically — ensure the .deb uses `dh_dbus` or declares the trigger dependency
+
+**Which phase should address it:** Phase implementing .deb packaging
+
+---
+
+### Pitfall 19: GUI on-demand daemon start doesn't wait for readiness
+
+**What goes wrong:** The GUI detects the daemon isn't running and calls `systemctl start` via polkit. But then it immediately tries to connect to the DBus name. The daemon hasn't finished startup yet (hwmon scan, config load). The GUI gets connection errors and shows a confusing "daemon not reachable" message even though it just asked for it to start.
+
+**Why it happens:** With `Type=notify`, the systemd unit isn't "active" until the daemon sends `READY=1`. But the GUI may poll faster than the daemon starts.
+
+**Prevention strategy:**
+- After triggering `systemctl start`, wait for the systemd unit to reach "active" state (use `systemctl is-active --wait` or poll `systemctl is-active`)
+- Then, wait for the DBus name to appear (use `dbus-monitor` pattern or Qt's name ownership tracking)
+- Show a "Starting daemon..." status in the GUI during this period
+- Set a reasonable timeout (e.g., 30s) before showing a failure message
+- The existing `StatusMonitor::checkDaemonConnected()` polling loop is the right foundation — reuse it with a "waiting for daemon start" state
+
+**Which phase should address it:** Phase implementing GUI on-demand start
+
+---
+
+### Pitfall 20: `install.sh` and .deb install the same files to different paths
+
+**What goes wrong:** The `install.sh` installs the daemon binary to `/usr/local/bin/` while the .deb installs to `/usr/libexec/kde-fan-control/`. The systemd unit in `install.sh` points to `/usr/local/bin/` but the .deb version points to `/usr/libexec/`. If a user runs both, they get conflicting installations and unpredictable behavior.
+
+**Why it happens:** `install.sh` is often written first with simpler paths, and .deb packaging applies FHS conventions later. No one reconciles the two.
+
+**Prevention strategy:**
+- Both `install.sh` and .deb MUST install to the same paths
+- Define the canonical file layout once and use it everywhere
+- Recommended layout:
+  - Daemon: `/usr/libexec/kde-fan-control/kde-fan-control-daemon`
+  - CLI: `/usr/bin/kfc`
+  - GUI: `/usr/bin/kde-fan-control`
+  - Config: `/var/lib/kde-fan-control/config.toml`
+  - Recovery helper: `/usr/libexec/kde-fan-control/kde-fan-control-recover`
+  - Systemd unit: `/lib/systemd/system/kde-fan-control-daemon.service`
+  - DBus policy: `/usr/share/dbus-1/system.d/org.kde.FanControl.conf`
+  - DBus service: `/usr/share/dbus-1/system-services/org.kde.FanControl.service`
+  - Polkit policy: `/usr/share/polkit-1/actions/org.kde.FanControl.policy`
+  - Desktop file: `/usr/share/applications/org.kde.FanControl.desktop`
+  - Autostart: `/etc/xdg/autostart/org.kde.FanControl.desktop`
+  - Icons: `/usr/share/icons/hicolor/scalable/apps/org.kde.FanControl.svg`
+  - KNotification config: `/usr/share/knotifications5/org.kde.fancontrol.notifyrc`
+
+**Which phase should address it:** First phase defining the packaging layout — before either install.sh or .deb is implemented
+
+---
 
 ## Phase-Specific Warnings
 
 | Phase Topic | Likely Pitfall | Mitigation |
 |-------------|---------------|------------|
-| Hardware discovery | Misidentifying devices via `hwmonN` | Persist real devpath + chip identity; verify before reapply |
-| Enrollment UX | Offering unsupported channels as controllable | Capability tiers; explicit refusal for unsafe hardware |
-| Safe writes | Invalid sysfs write becomes `0` | Typed validation + clamp + read-back verification |
-| Service lifecycle | Crash leaves fans slow | External recovery helper + watchdog + restart policy |
-| Boot auto-start | Partial discovery on first boot | Bounded retry and fail-closed ownership acquisition |
-| PID loop | Sampling faster than sensor update cadence | Sensor-aware polling, anti-windup, deadband |
-| Auto-tune | Thermal overshoot during identification | Hard abort limits, safe floors, opt-in only |
-| DBus API | Split-brain and future breakage | Daemon-owned state, signals, versioned interfaces |
+| File layout design | `install.sh` and .deb install to different paths | Define canonical layout once, use everywhere |
+| systemd unit | `ProtectSystem=strict` blocks hwmon writes | Test real hwmon writes; use `ReadWritePaths=/sys/class/hwmon`; don't use `PrivateDevices=yes` |
+| systemd unit | `ExecStop=` skipped on crash | Add `ExecStopPost=` with standalone recovery helper |
+| systemd unit | `Type=notify` but no sd_notify READY=1 signal sent | Wire `sd-notify` crate into daemon startup completion |
+| systemd + DBus | Bus activation file `SystemdService=` name mismatch | Match exactly to installed unit filename; test GUI launch without daemon running |
+| polkit policy | Policy file installed but authorization check still UID==0 | Replace `require_authorized()` body with `CheckAuthorization` call |
+| polkit policy | No auth agent available in SSH/headless | Allow root bypass; document CLI `sudo` usage |
+| .deb packaging | Config file treated as conffile, lost on upgrade | Don't conffile the daemon config; use runtime copy-from-template |
+| .deb packaging | Service not enabled after install | Enable in `postinst` or provide GUI "Start Daemon" button |
+| .deb packaging | `daemon-reload` not triggered | Use `dh_installsystemd` or explicit `systemctl daemon-reload` in `postinst` |
+| DBus policy | Install to `/etc/` instead of `/usr/share/` | Use `/usr/share/dbus-1/system.d/` for packaged policies |
+| .desktop file | No `StartupNotify=false`, no autostart entry | Set both; install autostart `.desktop` to `/etc/xdg/autostart/` |
+| .desktop file | Icon theme path mismatch | Install SVG to hicolor theme dirs; run `gtk-update-icon-cache` |
+| CLI placement | Binary in wrong PATH location | CLI → `/usr/bin/`, daemon → `/usr/libexec/` |
+| GUI on-demand start | Race between `systemctl start` and first DBus call | Wait for unit active + DBus name appearance before connecting |
 
-## Recommended Roadmap Flags
+## Recommended Research Flags for Roadmap
 
-- **Must research deeply before implementation:** crash-safe failover, hardware enrollment criteria, boot-time activation semantics, PID sampling strategy
-- **Can implement with standard patterns:** daemon-owned persistence, versioned DBus API, client synchronization via signals
-- **Should be deferred until core loop is proven:** aggressive derivative defaults, generic auto-tuning, fuzzy/self-tuning control
+- **Must research deeply before implementation:** systemd hardening vs hwmon access matrix, polkit CheckAuthorization wiring in zbus, DBus bus activation sequence of operations
+- **Can implement with standard patterns:** .desktop file content, icon installation, FHS file layout, postinst/postrm maintainer scripts
+- **Should be validated with real hardware:** ExecStopPost recovery behavior, hwmon write paths under different ProtectSystem settings, watchdog + sd_notify timing
 
 ## Sources
 
 ### HIGH confidence
+- systemd service semantics and ExecStop/ExecStopPost distinction: https://man7.org/linux/man-pages/man5/systemd.service.5.html
+- systemd hardening directives and their interaction with filesystem access: https://man7.org/linux/man-pages/man5/systemd.exec.5.html
+- D-Bus specification, service activation, and policy search paths: https://dbus.freedesktop.org/doc/dbus-specification.html
+- polkit architecture, action declaration, and authorization check flow: https://polkit.pages.freedesktop.org/polkit/polkit.8.html
+- zbus service activation pitfall documentation: Context7 `/dbus2/zbus` — book section on service activation
 - Linux kernel hwmon sysfs interface: https://www.kernel.org/doc/html/latest/hwmon/sysfs-interface.html
-- Linux kernel sysfs rules: https://www.kernel.org/doc/html/latest/admin-guide/sysfs-rules.html
-- Linux kernel thermal sysfs API: https://www.kernel.org/doc/html/latest/driver-api/thermal/sysfs-api.html
-- systemd service semantics: https://man7.org/linux/man-pages/man5/systemd.service.5.html
-- D-Bus specification: https://dbus.freedesktop.org/doc/dbus-specification.html
+- Real system reference: fancontrol `.deb` package layout, corectrl DBus/polkit/systemd integration, power-profiles-daemon systemd/DBus patterns, UDisks2 bus activation patterns (all examined on this system)
 
 ### MEDIUM confidence
-- `fancontrol(8)` manual, useful for defensive config validation patterns and smoothing concepts: https://man.archlinux.org/man/fancontrol.8.en
+- DBus policy file location convention evolution (`/etc/` → `/usr/share/`): based on examining real packages on this system (corectrl uses `/usr/share/`, NetworkManager uses `/usr/share/`, some older packages still in `/etc/`)
+- Debian dh_installsystemd auto-enable behavior: based on debhelper documentation patterns and common .deb packaging practice
+- `gtk-update-icon-cache` and icon theme path requirements: based on freedesktop icon naming spec and KDE packaging conventions
 
-### LOW confidence / expert-judgment synthesis
-- PID-specific recommendations here (anti-windup, deadband, conservative D-term use, guarded auto-tuning) are based on control-systems best practice synthesized against the documented Linux sensor/update constraints above, not on a single official Linux fan-control spec.
+### LOW confidence
+- Exact `sd-notify` crate behavior with Tokio watchdog: based on crate docs and common patterns, not tested against this specific daemon

@@ -1,174 +1,165 @@
 # Project Research Summary
 
-**Project:** KDE Fan Control
-**Domain:** Linux desktop fan-control system
-**Researched:** 2026-04-10
+**Project:** KDE Fan Control — Packaging & System Integration
+**Domain:** Linux desktop system service packaging (systemd, DBus, polkit, .deb, .desktop)
+**Researched:** 2026-04-11
 **Confidence:** HIGH
 
 ## Executive Summary
 
-KDE Fan Control should be built as a safety-first Linux desktop product, not as a generic hardware tweaking suite. The research strongly converges on a split architecture: a **root Rust daemon** owns hwmon/sysfs discovery, enrollment, control loops, persistence, and fail-safe behavior; unprivileged **Qt 6 + Kirigami GUI** and **Rust CLI** clients talk to it only through a **versioned D-Bus API**. This matches how experts build trustworthy Linux control software: keep hardware writes centralized, supervised by systemd, and isolated from the UI.
+KDE Fan Control is a Linux desktop fan-control application with a privileged Rust daemon, a Qt6/Kirigami GUI, and a CLI — all communicating via DBus on the system bus. This research covers the **packaging and system integration milestone**: making the existing application properly installable, boot-persistent, supervisor-managed, and authorize-able on a Linux desktop. This is a well-understood domain with clear reference implementations (UDisks2, ModemManager, power-profiles-daemon, corectrl, thermald) that demonstrate exactly how root DBus services, polkit policies, systemd units, `.desktop` files, and packaging should compose.
 
-The right v1 is a **trustworthy replacement for `fancontrol`** with better UX and stronger safety guarantees. That means inventory and capability validation first, explicit per-fan enrollment, one reliable automatic control path, daemon-owned persistence, boot/suspend recovery, and clear runtime visibility. Early differentiators worth including are friendly sensor/fan naming, sensor aggregation, a polished KDE-native UI, and a unified daemon/GUI/CLI contract.
+The recommended approach is a four-phase build: (1) create all static data files (systemd unit, DBus activation, polkit policy, `.desktop`, icons), (2) wire `sd-notify` and polkit `CheckAuthorization` into the daemon, (3) add `ALLOW_INTERACTIVE_AUTHORIZATION` flags and install targets to the GUI, and (4) assemble everything into a `.deb` package plus `install.sh` fallback. Only one new Rust crate is needed (`sd-notify 0.5.0`); everything else is declarative config files. The polkit daemon-side wiring — replacing the existing `require_authorized()` UID-0 check with a `CheckAuthorization` DBus call — is the only moderate-complexity code change.
 
-The biggest risks are not framework choice but unsafe assumptions: persisting unstable `hwmonN` paths, treating writable PWM as safe support, relying on clean shutdown for fail-safe recovery, and tuning control loops faster than sensors update. The roadmap should therefore be inventory-first and safety-first: prove hardware identity, enrollment rules, transactionality, crash recovery, and fallback behavior before spending time on richer UX or advanced tuning.
+The key risks are operational, not architectural: systemd hardening directives silently blocking hwmon sysfs writes, `ExecStopPost=` not being configured for crash-safe fan fallback, and the polkit `.policy` file being installed without actually wiring the daemon to call `CheckAuthorization`. Each of these produces a broken system that *looks* healthy — fans appear managed but aren't, or auth appears configured but isn't. Prevention requires end-to-end testing with real hardware, not just "service starts" validation.
 
 ## Key Findings
 
 ### Recommended Stack
 
-The research recommends a split stack because the product crosses two very different domains: privileged Linux systems control and KDE-native desktop UX. Rust is the best fit for the long-running daemon and CLI, while Qt/Kirigami remains the right choice for the GUI. The daemon should expose D-Bus as the only control boundary and run as a hardened systemd system service with explicit readiness and watchdog support.
+The packaging milestone adds only one new Rust dependency (`sd-notify 0.5.0`) and relies on declarative system-integration files. The existing stack (Rust/Tokio/zbus daemon, Qt6/Kirigami GUI, DBus system bus) is unchanged. All packaging work is about formalizing and completing integration points that already partially exist (e.g., the DBus bus name and basic policy config are already in the codebase).
 
-**Core technologies:**
-- **Rust 1.94.1 (Edition 2024):** daemon and CLI foundation — strong fit for safe, concurrent systems code.
-- **Tokio + zbus:** async runtime and D-Bus implementation — mature, Rust-native, and ideal for long-lived service loops.
-- **raw hwmon sysfs + optional udev enrichment:** hardware integration — kernel ABI is the real source of truth; identity needs more than `hwmonN`.
-- **systemd system service (`Type=notify`):** lifecycle supervision — required for readiness, restart, watchdog, and safe boot behavior.
-- **Qt 6 / Qt Quick / Qt DBus + KF6 Kirigami:** GUI stack — best match for a KDE-first desktop app.
-- **TOML + serde:** single active config — simpler and safer than introducing a database in v1.
-
-Critical version guidance: start greenfield Rust on **Edition 2024**, target **Qt 6.11.x upstream** while keeping code compatible with roughly **Qt 6.8+ distro floors**, and use a **versioned D-Bus namespace** from day one.
+**Core additions:**
+- **sd-notify 0.5.0**: systemd readiness + watchdog keep-alive — pure Rust, no C FFI, standard choice
+- **systemd unit file (Type=notify)**: boot persistence, supervision, watchdog, crash recovery — `Type=notify` over `Type=simple` because daemon must validate hwmon + config + DBus before "ready"
+- **DBus service activation (.service file)**: on-demand daemon start via `SystemdService=` delegation — lets systemd manage the process, not dbus-daemon
+- **Polkit .policy XML**: replaces hard UID-0 check with `auth_admin_keep` — standard Linux privilege escalation for desktop apps; no new crate needed (zbus calls `org.freedesktop.PolicyKit1` directly)
+- **.deb package (two packages: `fancontrold` + `kde-fan-control`)**: primary install target; manual `dpkg-deb` build because `cargo-deb` can't handle the Qt artifacts
+- **install.sh**: POSIX shell fallback for non-Debian systems
 
 ### Expected Features
 
-The market baseline is clear: users replacing `fancontrol` expect reliable discovery, mapping of temperature sources to controllable fans, automatic control, persistence, and safe handoff back to firmware. The product does not need to match CoolerControl’s full suite in v1, but it does need to feel safer and easier to trust.
-
 **Must have (table stakes):**
-- Hardware discovery of sensors, fan tach inputs, and controllable PWM channels.
-- Capability validation before enrollment, including proof of safe fallback behavior.
-- Per-fan BIOS/firmware vs daemon ownership.
-- Temperature-based automatic control with per-fan sensor source selection.
-- Safe min/max output bounds, start behavior, and fail-safe recovery.
-- Persistent single active configuration with boot auto-start.
-- Live monitoring of temps, RPM, output, and control state.
-- Suspend/resume re-apply or explicit recovery behavior.
-- CLI-level inspectability and clear unsupported/partial-support reporting.
+- systemd unit file with `Type=notify`, watchdog, `ExecStopPost=` fallback, and hardening — any Linux system service needs this
+- Daemon enabled at boot (`systemctl enable` in postinst)
+- DBus service activation file for on-demand daemon start when GUI launches first
+- DBus system bus policy installed to `/usr/share/dbus-1/system.d/`
+- Polkit policy replacing UID-0 check — enables proper auth prompts instead of requiring `sudo`
+- `.desktop` file for GUI discoverability in KDE menu/launcher
+- App icon in hicolor theme (SVG + PNG fallbacks) for `.desktop` and tray
+- CLI in PATH at `/usr/bin/kfc`
+- Standard FHS file layout across all install paths
+- `.deb` package with postinst/prerm hooks for daemon-reload, enable, start
+- `install.sh` fallback installer
 
-**Should have (competitive):**
-- Friendly names for sensors and fans.
-- Sensor aggregation (`max`, `avg`, `min`, `median`).
-- Per-fan PID control with understandable parameters.
-- KDE-native GUI + tray.
-- Unified daemon + GUI + CLI over one API.
-- Explicit safe-enrollment workflow.
+**Should have (differentiators):**
+- `auth_admin_keep` polkit default — avoids repeated password prompts for 5 minutes
+- Journal integration (`StandardOutput=journal`) — `tracing` logs queryable via `journalctl -u`
+- `dbus-org.kde.FanControl.service` alias symlink — standard pattern for bus activation
+- Documented hardening exceptions — shows security posture audibly, unlike `fancontrol`
 
 **Defer (v2+):**
-- Multiple saved profiles and global modes.
-- Rich fan-curve editor alongside PID.
-- Alerts, dashboards, and historical graphs.
-- GPU fan support, AIO/liquidctl integration, and Web/remote UI.
-- NBFC-style embedded-controller laptop support.
-- Aggressive adaptive/self-learning control beyond conservative guided tuning.
+- AppStream metadata (`.metainfo.xml`) — nice for software centers, not actionable without repo indexing
+- RPM/Arch/COPR packaging — per-distro contribution pattern
+- APT repository hosting — requires CI + signing + hosting
+- Flatpak/sandboxed GUI — fights the product's need for direct sysfs + DBus system-bus access
+- SELinux/AppArmor profiles — niche for initial KDE-desktop target
 
 ### Architecture Approach
 
-The architecture research is strongly aligned with the stack and feature findings: use a **single authoritative root daemon** with four internal layers — hardware adapter, control core, service/API layer, and persistence/runtime integration. GUI, tray, and CLI must remain unprivileged D-Bus clients. Internally, the daemon should separate persistent config, derived runtime plan, telemetry, and safety state; apply config changes transactionally; serialize writes per chip/channel; and expose a versioned object tree with read-only telemetry and polkit-gated mutating operations.
+The packaging layer is a thin integration surface that sits between the existing application components and the Linux system. It follows six established patterns: (1) **systemd Type=notify with deferred readiness** — daemon signals READY=1 only after hwmon discovery, config load, and DBus name acquisition all succeed; (2) **DBus service activation → systemd** — `.service` file with `SystemdService=` tells dbus-daemon to delegate to systemd; (3) **Polkit authorization replacing UID-0** — daemon calls `CheckAuthorization` with caller identity; falls back to UID-0 if polkit unavailable; (4) **FHS-standard install paths** — all files at their conventional Linux locations; (5) **Dual packaging** — `.deb` primary + `install.sh` fallback, using identical file paths; (6) **Single polkit action** — one `write-config` action covers all privileged writes, avoiding unnecessary granularity.
 
 **Major components:**
-1. **Inventory + capability layer** — discovers hwmon devices, builds stable identities, and classifies channels as safe, unsafe, read-only, or unsupported.
-2. **Control core + fail-safe manager** — owns enrollment, aggregation, PID scheduling, actuator clamping, and emergency fallback.
-3. **D-Bus service + config transaction manager** — exposes versioned API, authorizes mutations, stages/validates/apply-rolls back config changes.
-4. **Persistence + systemd integration** — stores the single active config, reconciles on boot, and participates in restart/watchdog/safe-stop flows.
-5. **Qt/QML GUI and CLI clients** — render inventory/runtime state and submit intent, but never touch sysfs or config files directly.
+1. **systemd unit file** — daemon lifecycle, boot startup, readiness, watchdog, crash recovery, hardening
+2. **DBus activation + policy files** — on-demand start, bus-level ACL for name ownership and message routing
+3. **Polkit policy + daemon auth wiring** — defines privileged actions; daemon checks them per-method
+4. **.deb package + install.sh** — assembles all artifacts into installable form with correct FHS paths and postinst hooks
 
 ### Critical Pitfalls
 
-1. **Crash-only safety is not the same as clean shutdown safety** — use systemd restart/watchdog plus an out-of-process recovery path that can still force safe fan state after a crash.
-2. **Persisting `hwmonN` identifiers will break reenrollment** — store stable physical identity (real devpath + chip/controller metadata) and refuse auto-ownership when confidence drops.
-3. **Writable does not mean safely controllable** — require capability tiers and explicit enrollment validation before daemon ownership.
-4. **Over-eager PID loops will create noisy, unstable control** — make sampling sensor-aware and ship clamps, anti-windup, deadband, and rate limits from day one.
-5. **Unsafe sysfs writes can coerce to zero** — centralize typed validation, clamp before writes, and verify read-back on critical operations.
+1. **`ProtectSystem=strict` silently blocks hwmon writes** — daemon appears healthy but cannot control fans. Add `ReadWritePaths=/sys/class/hwmon`; do NOT use `PrivateDevices=yes`; test with real hwmon writes, not just service-start checks.
+2. **Polkit policy installed but not wired into daemon** — `.policy` file exists but daemon still checks `uid == 0`. Must replace `require_authorized()` body with `CheckAuthorization` call; this is a mandatory code change, not just file installation.
+3. **`ExecStopPost=` not configured for crash-safe fallback** — `ExecStop=` is skipped on crash or startup failure. Fans stay at last PWM value (possibly low). Install `ExecStopPost=` with a standalone recovery helper that reads persisted enrolled-fan list and forces PWM to safe-max.
+4. **DBus activation file `SystemdService=` name mismatch** — on-demand daemon start fails silently. File name must match bus name; `SystemdService=` value must exactly match the installed unit filename. Test: stop daemon, launch GUI, verify auto-start works.
+5. **`.deb` conffile handling overwrites daemon config on upgrade** — don't mark daemon-owned config as a dpkg conffile. Install a default template to `/usr/share/`, let the daemon copy to its runtime location on first start. Include a `config_version` field from day one.
 
 ## Implications for Roadmap
 
-Based on the combined research, the roadmap should be organized around risk retirement, not UI completeness.
+Based on research, suggested phase structure:
 
-### Phase 1: Hardware Identity, Safety Contract, and Read-Only Inventory
-**Rationale:** All later work depends on correctly understanding what hardware exists and whether it is safe to manage. This is the highest-risk area and the foundation for every feature.
-**Delivers:** Sysfs/hwmon adapter, stable identity model, capability classifier, read-only inventory/telemetry D-Bus API, basic CLI inspect commands, initial systemd service skeleton, sensor normalization.
-**Addresses:** hardware discovery, unsupported/partial-support reporting, CLI inspectability.
-**Avoids:** unstable `hwmonN` persistence, malformed writes, fake “supported” hardware, boot-time partial discovery.
+### Phase 1: Static Data Files & File Layout
+**Rationale:** All packaging artifacts are declarative files with zero code dependencies. Getting them right first provides the foundation that daemon integration, GUI integration, and packaging all depend on. Canonical file paths must be defined before any install logic is written.
+**Delivers:** systemd unit file, DBus activation file, DBus policy (extended), polkit `.policy` XML, `.desktop` file, icon SVG/PNGs, canonical FHS path mapping
+**Addresses:** systemd unit, DBus activation, polkit policy, `.desktop` file, CLI in PATH, FHS layout, icons
+**Avoids:** Pitfall #20 (install.sh and .deb install to different paths) — canonical layout defined once before either exists
 
-### Phase 2: Enrollment, Transactions, Persistence, and Lifecycle Safety
-**Rationale:** Before enabling active control, the daemon must prove it can own channels safely, apply changes atomically, and recover sanely across boot, suspend, and failure.
-**Delivers:** Safe enrollment workflow, per-fan ownership states, config transaction manager, TOML persistence, boot restore/reconciliation, suspend/resume handling, polkit-gated mutating API, external recovery helper/watchdog strategy.
-**Uses:** Rust daemon, zbus D-Bus layer, TOML persistence, systemd hardening and watchdog integration.
-**Implements:** config manager, persistence/runtime layer, safety state machine.
-**Avoids:** split-brain state, crash-only fail-safe gaps, unsafe reenrollment, blind config replay at boot.
+### Phase 2: Daemon Integration (sd-notify + Polkit)
+**Rationale:** The daemon needs two code changes: sd-notify readiness/watchdog/stop signals, and polkit CheckAuthorization replacing the UID-0 check. Both are small, well-contained changes. Phase 1 files must be available for end-to-end testing, but Phase 2 can be developed in parallel with Phase 1 using manual installs.
+**Delivers:** `sd-notify` crate integration (READY=1, WATCHDOG=1, STOPPING=1), polkit auth wiring in `require_authorized()`, UID-0 fallback for polkit-unavailable environments
+**Uses:** sd-notify 0.5.0, zbus (existing)
+**Implements:** Architecture patterns #1 (Type=notify) and #3 (Polkit auth)
+**Avoids:** Pitfall #1 (ProtectSystem=strict blocks hwmon — test with Phase 1 unit file), Pitfall #3 (polkit not wired in), Pitfall #13 (no auth agent headless — UID-0 fallback)
 
-### Phase 3: Conservative Automatic Control Core
-**Rationale:** Control logic should come only after inventory and safety rules are trustworthy. The first goal is reliable thermal behavior, not tuning sophistication.
-**Delivers:** Per-fan sensor selection, sensor aggregation, bounded PI/PID control, output clamps, anti-windup, deadband, slew-rate limiting, actuator serialization, real hardware write/readback verification, degraded/fallback states.
-**Addresses:** automatic temperature-based control, min/max bounds, live runtime state, fail-safe control transitions.
-**Avoids:** PID instability, noisy fan hunting, unsafe assumptions about sensor cadence, uncontrolled concurrent writes.
+### Phase 3: GUI Integration & ExecStopPost Fallback
+**Rationale:** GUI needs `ALLOW_INTERACTIVE_AUTHORIZATION` flag on write calls (harmless without polkit, essential with it) and CMake install targets for `.desktop` + icons. The `ExecStopPost=` helper is a standalone binary/script that reads persisted fan state and forces safe-max — it's safety-critical and independent from the daemon code.
+**Delivers:** GUI DBus flag for interactive auth, CMake install targets, `ExecStopPost=` recovery helper binary/script, improved auth-denied error messages
+**Implements:** Architecture pattern #4 (FHS paths for GUI artifacts)
+**Avoids:** Pitfall #4 (ExecStopPost not configured — this phase builds the recovery helper), Pitfall #19 (GUI doesn't wait for daemon readiness — StatusMonitor enhancement)
 
-### Phase 4: KDE GUI, Tray, and Operator UX
-**Rationale:** Once the daemon contract is stable, the GUI can be built quickly and safely on top of real behavior rather than guesses.
-**Delivers:** Kirigami GUI, tray/status integration, inventory and telemetry views, enrollment/config screens, friendly naming, clear health/degraded-state UX, parity with CLI on core operations.
-**Addresses:** native KDE UX, live monitoring, friendly labels, safe enrollment usability.
-**Avoids:** GUI-owned config, direct D-Bus from ad hoc QML, client/runtime divergence.
-
-### Phase 5: Guided Tuning and Selected v1 Differentiators
-**Rationale:** Only after the core loop is proven should the project expand into higher-value usability features.
-**Delivers:** Conservative guided PID tuning, better diagnostic views, refined aggregation UX, optional basic auto-tuning on validated hardware only.
-**Addresses:** early differentiators without expanding into v2 surface area.
-**Avoids:** unsafe one-click tuning, premature profile complexity, overpromising unsupported hardware.
+### Phase 4: Packaging (.deb + install.sh)
+**Rationale:** Packaging depends on all artifacts from Phases 1–3 being finalized with correct install paths. The `.deb` must stage both Rust and Qt build artifacts; `cargo-deb` can't handle this, so manual `dpkg-deb` is simpler. `install.sh` must mirror the `.deb` file list exactly.
+**Delivers:** `fancontrold` `.deb` package, `kde-fan-control` `.deb` package, `install.sh` + `uninstall.sh`, postinst/prerm maintainer scripts
+**Avoids:** Pitfall #5 (conffile overwrites config — don't mark daemon config as conffile), Pitfall #6 (DBus policy path — install to `/usr/share/`), Pitfall #7 (no enable in postinst), Pitfall #14 (no daemon-reload), Pitfall #18 (no DBus policy reload)
 
 ### Phase Ordering Rationale
 
-- Discovery, identity, and safety classification must precede enrollment, persistence, and control because every feature depends on trustworthy hardware modeling.
-- Transactionality and lifecycle recovery must precede live control because incorrect persistence or crash handling is a thermal safety issue, not a polish issue.
-- GUI/tray work belongs after the D-Bus and runtime contract stabilizes; otherwise the project risks rebuilding UX around moving backend semantics.
-- Advanced tuning should come last because the research explicitly flags PID sampling, derivative behavior, and auto-tune guardrails as areas requiring extra caution.
+- Phase 1 has zero code dependencies — it's pure data files that can be tested by manual installation
+- Phase 2 depends on Phase 1 files being installed for end-to-end testing, but can be developed in parallel
+- Phase 3 depends on Phase 2's polkit integration for interactive auth to work, but the `ALLOW_INTERACTIVE_AUTHORIZATION` flag itself is harmless without polkit
+- Phase 4 depends on Phases 1–3 — all artifacts and their install paths must be finalized before packaging
+- The ExecStopPost recovery helper (Phase 3) is safety-critical and should not be deferred — it's the only out-of-process fan safety net
 
 ### Research Flags
 
 Phases likely needing deeper research during planning:
-- **Phase 1:** hardware enrollment criteria and stable identity heuristics across varied boards need continued validation on real machines.
-- **Phase 2:** crash-safe failover, boot activation semantics, and recovery-helper behavior deserve dedicated implementation research.
-- **Phase 3:** sensor-aware sampling strategy and conservative tuning defaults need targeted control-loop research/testing.
-- **Phase 5:** any auto-tuning work should be treated as research-heavy and opt-in only.
+- **Phase 2 (polkit wiring):** The exact `CheckAuthorization` call signature with zbus needs verification against the polkit D-Bus API; handling of `ALLOW_INTERACTIVE_AUTHORIZATION` flag from the Qt DBus side needs testing
+- **Phase 3 (ExecStopPost):** The recovery helper's behavior under different crash scenarios (SIGKILL, watchdog expiry, OOM) should be validated with real hardware; `ProtectSystem=strict` + `ReadWritePaths` interaction with sysfs may need system-specific testing
 
 Phases with standard patterns (skip research-phase):
-- **Phase 4:** Qt/Kirigami client structure on top of a stable D-Bus API is well-documented and comparatively low-risk.
-- **Most of persistence/API plumbing in Phase 2:** versioned D-Bus naming, daemon-owned state, and polkit-gated mutations follow standard patterns.
+- **Phase 1 (static files):** Well-documented formats (systemd.unit, DBus .service, polkit .policy, .desktop); all derived from reference implementations on this system
+- **Phase 4 (.deb packaging):** Standard Debian packaging; debhelper + dh-systemd automate most of it
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | Strong convergence across official Rust, Qt, kernel hwmon, and systemd sources. |
-| Features | HIGH | Market baseline is clear across `fancontrol`, `thinkfan`, NBFC-Linux, CoolerControl, and kernel docs. |
-| Architecture | HIGH | Boundaries and sequencing are well supported by D-Bus, systemd, Qt, and hwmon documentation. |
-| Pitfalls | MEDIUM-HIGH | Core failure modes are well grounded; some PID/tuning advice is expert synthesis rather than a single authoritative spec. |
+| Stack | HIGH | Only one new crate (sd-notify); all other additions are declarative files with no version risk; reference implementations examined on this system |
+| Features | HIGH | Well-understood packaging surface; every feature has a reference implementation (corectrl, thermald, power-profiles-daemon, udisks2); MVP ordering is clear |
+| Architecture | HIGH | Six patterns all derived from real system services; data flows validated against existing codebase; dependency graph is linear |
+| Pitfalls | HIGH | 20 pitfalls identified from real-world packaging experience and systemd/DBus docs; top 5 have specific mitigation strategies; low-certainty items are minor (sd-notify + Tokio timing) |
 
 **Overall confidence:** HIGH
 
 ### Gaps to Address
 
-- **Real-hardware coverage:** research is strong on patterns but cannot guarantee which boards expose safe controllable channels; plan for validation on representative hardware early.
-- **Exact fail-safe mechanism:** the recovery-helper design is clearly needed, but the final implementation details should be proven with crash-path tests.
-- **Sensor normalization edge cases:** some temperature channels may need board/driver-specific interpretation; ambiguous sensors should stay read-only until confidence is high.
-- **Control defaults:** default PI/PID parameters and sampling intervals should be calibrated empirically against actual hwmon update cadence.
+- **Polkit CheckAuthorization exact API:** The daemon must call `org.freedesktop.PolicyKit1.Authority.CheckAuthorization()` via zbus. The exact struct layout for the `Subject` parameter (unix-process with PID + UID + start-time) needs verification against the polkit D-Bus interface specification. Handle during Phase 2 implementation.
+- **sd-notify + Tokio watchdog timing:** The `sd_notify::notify(false, "WATCHDOG=1")` call in the Tokio runtime should be called from the main task, not a spawned task. The exact timing (every 30s when `WatchdogSec=60`) needs real-world validation. Handle during Phase 2 testing.
+- **Qt6/Kirigami package names for .deb dependencies:** Package naming varies across Ubuntu/Debian releases (`qml6-module-org-kde-kirigami` vs. `libkirigami6`). Verify at package-build time, not during research.
+- **ProtectSystem=strict + sysfs writes on different kernels:** Some `/sys/class/hwmon` writes may resolve through symlinks outside the `ReadWritePaths=` exception on certain kernel/driver combinations. May need fallback to `ProtectSystem=full`. Validate with real hardware during Phase 1 testing.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-- Linux kernel hwmon sysfs interface — canonical control and sensor ABI.
-- D-Bus specification — object model, naming, and standard interface guidance.
-- systemd service documentation — lifecycle, readiness, restart, watchdog, stop semantics.
-- Qt 6 / Qt Quick / Qt DBus docs — GUI and client architecture guidance.
-- KDE Kirigami docs — KDE-native application shell and component guidance.
-- Context7 `/dbus2/zbus`, `/tokio-rs/tokio`, `/clap-rs/clap` — Rust daemon/runtime/API implementation details.
+- systemd.service(5) man page — service unit configuration, Type=notify, BusName=, ExecStopPost=, watchdog, hardening — https://man7.org/linux/man-pages/man5/systemd.service.5.html
+- D-Bus Specification — service activation, SystemdService key, ALLOW_INTERACTIVE_AUTHORIZATION flag — https://dbus.freedesktop.org/doc/dbus-specification.html
+- polkit(8) — authorization framework, action declarations, .policy XML format, auth_admin_keep — https://www.freedesktop.org/software/polkit/docs/latest/
+- freedesktop Desktop Entry Specification v1.5 — .desktop file format — https://specifications.freedesktop.org/desktop-entry-spec/latest/
+- Linux FHS 3.0 — standard paths for binaries, config, data — https://refspecs.linuxfoundation.org/FHS_3.0/
+- Linux kernel hwmon sysfs ABI — /sys/class/hwmon interface — https://www.kernel.org/doc/html/latest/hwmon/sysfs-interface.html
+- zbus documentation (Context7 `/dbus2/zbus`) — Rust DBus server/client, service activation pitfalls, Tokio integration
+- Real system references: power-profiles-daemon, corectrl, thermald, udisks2, ModemManager — unit files, DBus configs, polkit policies examined on this system
+- Existing codebase: daemon auth code (`main.rs:789`), GUI DBus interface, existing DBus policy, config paths
 
 ### Secondary (MEDIUM confidence)
-- `fancontrol(8)` manual — defensive validation patterns and expected operator workflow.
-- ArchWiki fan-speed-control overview — suspend, vendor, and partial-support realities.
-- `udev(7)` / related Linux integration docs — device identity enrichment and operational behavior.
+- Debian Policy Manual / debhelper documentation — .deb packaging conventions, maintainer scripts
+- sd-notify crate 0.5.0 — behavior under Tokio async runtime; fdstore feature
+- KStatusNotifierItem tray icon behavior with themed icons — needs KDE Plasma verification
 
 ### Tertiary (LOW confidence)
-- Control-loop tuning guidance synthesized from Linux sensor/update constraints and general controls practice — useful, but must be validated on real hardware.
+- Exact Qt6/Kirigami `.deb` package names — varies by Ubuntu/Debian release; verify at build time
+- dpkg `dh_installsystemd` auto-enable behavior — Debian 13+ specifics unverified
+- `sd-notify` crate behavior with Tokio watchdog timing — not tested against this specific daemon
 
 ---
-*Research completed: 2026-04-10*
+*Research completed: 2026-04-11*
 *Ready for roadmap: yes*
