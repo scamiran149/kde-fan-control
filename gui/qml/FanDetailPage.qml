@@ -31,6 +31,18 @@ Kirigami.ScrollablePage {
 
     title: fanDisplayName
 
+    // Wizard configuration entry point for unmanaged available fans (Plan 04 per D-04)
+    actions.main: Kirigami.Action {
+        text: i18n("Wizard configuration")
+        iconName: "tools-wizard"
+        visible: fanDetailPage.fanSupportState === "available" && fanDetailPage.fanState === "unmanaged"
+        enabled: statusMonitor.daemonConnected
+        onTriggered: {
+            wizardDialog.preselectedFanId = fanDetailPage.fanId
+            wizardDialog.open()
+        }
+    }
+
     // Load fan data into draft model when page becomes active
     onFanIdChanged: {
         if (fanId !== "") {

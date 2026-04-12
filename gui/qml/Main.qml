@@ -53,6 +53,11 @@ Kirigami.ApplicationWindow {
         id: inventoryPage
     }
 
+    // Wizard configuration dialog (Plan 04)
+    WizardDialog {
+        id: wizardDialog
+    }
+
     pageStack.initialPage: overviewPage
 
     Connections {

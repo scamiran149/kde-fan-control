@@ -112,13 +112,31 @@ Kirigami.ScrollablePage {
                 text: i18n("No managed fans yet")
                 explanation: i18n("Select a supported fan, choose its temperature source, then validate and apply the draft to start daemon-managed control.")
             }
+
+            // Empty-state wizard CTA (Plan 04: wizard entry point per D-04)
+            Controls.Button {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.topMargin: Kirigami.Units.mdSpacing
+                visible: fanListModel.rowCount() === 0 && statusMonitor.daemonConnected
+                text: i18n("Wizard configuration")
+                icon.name: "tools-wizard"
+                highlighted: true
+                onClicked: {
+                    wizardDialog.preselectedFanId = ""
+                    wizardDialog.open()
+                }
+            }
         }
     }
 
-    // Toolbar action: Wizard configuration (secondary, Plan 04)
+    // Toolbar action: Wizard configuration (secondary per D-04)
     actions.main: Kirigami.Action {
         text: i18n("Wizard configuration")
         iconName: "tools-wizard"
         enabled: statusMonitor.daemonConnected
+        onTriggered: {
+            wizardDialog.preselectedFanId = ""
+            wizardDialog.open()
+        }
     }
 }

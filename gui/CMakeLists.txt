@@ -36,6 +36,7 @@ qt_add_qml_module(gui_app
         qml/OverviewPage.qml
         qml/InventoryPage.qml
         qml/FanDetailPage.qml
+        qml/WizardDialog.qml
         qml/TrayPopover.qml
         qml/delegates/FanRowDelegate.qml
         qml/delegates/FanTrayDelegate.qml
