@@ -2,12 +2,12 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Packaging & System Integration
-status: defining_requirements
-stopped_at: Defining requirements
+status: roadmap_created
+stopped_at: Roadmap created, ready to plan Phase 5
 last_updated: "2026-04-11T00:00:00.000Z"
-last_activity: 2026-04-11 -- Milestone v1.1 started
+last_activity: 2026-04-11 -- Roadmap created for v1.1
 progress:
-  total_phases: 0
+  total_phases: 4
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-11)
 
 **Core value:** Users can safely and flexibly control desktop fan behavior with understandable per-fan PID policies, without losing fail-safe behavior.
-**Current focus:** Defining requirements for v1.1
+**Current focus:** Phase 5 — System Integration Files
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 5 of 8 (System Integration Files)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-04-11 -- Milestone v1.1 started
+Status: Ready to plan
+Last activity: 2026-04-11 — Roadmap created for v1.1 Packaging & System Integration
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -36,33 +36,33 @@ Progress: [░░░░░░░░░░] 0%
 
 **Velocity:**
 
-(v1.1 metrics will be populated as phases complete)
+(v1.1 metrics will populate as phases complete)
+
+**By Phase:**
+
+| Phase | Plans | Total | Avg/Plan |
+|-------|-------|-------|----------|
+| — | — | — | — |
+
+*Updated after each plan completion*
 
 ## Accumulated Context
 
 ### Decisions
 
 Decisions are logged in PROJECT.md Key Decisions table.
-Key decisions from v1.0:
-
-- DBus-first daemon-owned architecture
-- Draft/apply config pattern
-- Read-open/write-privileged DBus access
-- PID output as logical 0-100%
-- StatusMonitor uses polling (revisit for reactive signals)
-
-New v1.1 decisions:
+Key decisions from v1.1:
 
 - Standard FHS file layout for all installed artifacts
 - systemd Type=notify with sd-notify readiness signaling
-- Polkit with granular actions (enroll/apply/tune/manage) and auth_admin_keep
-- DBus service activation via SystemdService= key (not direct Exec=)
+- Polkit with granular actions and auth_admin_keep
+- DBus service activation via SystemdService= (systemd-managed, not direct Exec=)
 - .deb primary + install.sh fallback packaging
-- Tray embedded in GUI process (no separate binary)
+- ExecStopPost recovery helper as standalone binary for crash-safe fan fallback
 
 ### Pending Todos
 
-- Complete roadmap creation for v1.1
+- None
 
 ### Blockers/Concerns
 
@@ -70,6 +70,6 @@ New v1.1 decisions:
 
 ## Session Continuity
 
-Last session: 2026-04-11 00:00
-Stopped at: Milestone v1.1 requirements definition
+Last session: 2026-04-11
+Stopped at: Roadmap created for v1.1
 Resume file: None

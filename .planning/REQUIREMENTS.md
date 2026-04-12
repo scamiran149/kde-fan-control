@@ -76,29 +76,29 @@ Requirements for packaging and system integration milestone. Each maps to roadma
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| PATH-01 | — | Pending |
-| PATH-02 | — | Pending |
-| SYSD-01 | — | Pending |
-| SYSD-02 | — | Pending |
-| SYSD-03 | — | Pending |
-| SYSD-04 | — | Pending |
-| SYSD-05 | — | Pending |
-| SYSD-06 | — | Pending |
-| DBUS-01 | — | Pending |
-| DBUS-02 | — | Pending |
-| DBUS-03 | — | Pending |
-| AUTH-01 | — | Pending |
-| AUTH-02 | — | Pending |
-| AUTH-03 | — | Pending |
-| DESK-01 | — | Pending |
-| DESK-02 | — | Pending |
-| PACK-01 | — | Pending |
-| PACK-02 | — | Pending |
+| PATH-01 | Phase 5 | Pending |
+| PATH-02 | Phase 5 | Pending |
+| SYSD-01 | Phase 5 | Pending |
+| SYSD-02 | Phase 6 | Pending |
+| SYSD-03 | Phase 6 | Pending |
+| SYSD-04 | Phase 7 | Pending |
+| SYSD-05 | Phase 5 | Pending |
+| SYSD-06 | Phase 5 | Pending |
+| DBUS-01 | Phase 5 | Pending |
+| DBUS-02 | Phase 5 | Pending |
+| DBUS-03 | Phase 5 | Pending |
+| AUTH-01 | Phase 5 | Pending |
+| AUTH-02 | Phase 6 | Pending |
+| AUTH-03 | Phase 6 | Pending |
+| DESK-01 | Phase 5 | Pending |
+| DESK-02 | Phase 5 | Pending |
+| PACK-01 | Phase 8 | Pending |
+| PACK-02 | Phase 8 | Pending |
 
 **Coverage:**
 - v1.1 requirements: 18 total
-- Mapped to phases: 0
-- Unmapped: 18 ⚠️
+- Mapped to phases: 18
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-04-11*
