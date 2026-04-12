@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
 milestone: v1.0
-milestone_name: milestone
-status: executing
-stopped_at: Initial roadmap creation complete; Phase 1 is ready for planning
-last_updated: "2026-04-11T21:24:58.524Z"
-last_activity: 2026-04-11
+milestone_name: MVP
+status: completed
+stopped_at: v1.0 MVP shipped
+last_updated: "2026-04-12T02:12:00.000Z"
+last_activity: 2026-04-12 -- v1.0 milestone archived
 progress:
   total_phases: 4
-  completed_phases: 2
-  total_plans: 11
-  completed_plans: 11
+  completed_phases: 4
+  total_plans: 15
+  completed_plans: 15
   percent: 100
 ---
 
@@ -18,64 +18,63 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-10)
+See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** Users can safely and flexibly control desktop fan behavior with understandable per-fan PID policies, without losing fail-safe behavior.
-**Current focus:** Phase 03 — temperature-control-runtime-operations
+**Current focus:** Planning next milestone
 
 ## Current Position
 
-Phase: 4
-Plan: Not started
-Status: Executing Phase 03
-Last activity: 2026-04-11
+Milestone: v1.0 MVP — COMPLETED
+Status: Archived
+Last activity: 2026-04-12 -- v1.0 milestone archived
 
-Progress: [██░░░░░░░░] 20%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 5
-- Average duration: 0 min
-- Total execution time: 0.0 hours
+- Total plans completed: 15
+- Total execution time: ~1 day (Apr 10-11, 2026)
 
 **By Phase:**
 
-| Phase | Plans | Total | Avg/Plan |
-|-------|-------|-------|----------|
-| 03 | 5 | - | - |
+| Phase | Plans | Completed |
+|-------|-------|-----------|
+| 01 | 4 (no plan files) | 2026-04-11 |
+| 02 | 6 | 2026-04-11 |
+| 03 | 5 | 2026-04-11 |
+| 04 | 4 | 2026-04-11 |
 
 **Recent Trend:**
 
-- Last 5 plans: none
-- Trend: Stable
+- All phases completed in single day
+- Trend: Strong initial velocity
 
 ## Accumulated Context
 
 ### Decisions
 
 Decisions are logged in PROJECT.md Key Decisions table.
-Recent decisions affecting current work:
+Key decisions from v1.0:
 
-- [Init]: DBus-first daemon-owned architecture is the system boundary for GUI and CLI.
-- [Init]: Rust daemon and CLI pair with a KDE/Qt6/QML GUI.
-- [Init]: v1 keeps one active persisted configuration and auto-starts managed fans on boot.
-- [Init]: Adaptive or fuzzy PID is explicitly out of v1 scope.
+- DBus-first daemon-owned architecture
+- Draft/apply config pattern
+- Read-open/write-privileged DBus access
+- PID output as logical 0-100%
+- StatusMonitor uses polling (revisit for reactive signals)
 
 ### Pending Todos
 
-- Bootstrap Rust workspace for daemon, CLI, and shared inventory code.
-- Land initial read-only hwmon inventory model and CLI inspection path.
-- Define Phase 1 D-Bus object and snapshot shape before wiring zbus.
+- Start next milestone planning via `/gsd-new-milestone`
 
 ### Blockers/Concerns
 
-- [Phase 1]: Stable hardware identity and support classification need validation against real hwmon exposure.
-- [Phase 2]: Crash-path fallback and degraded boot recovery need focused implementation research before execution.
+- None — milestone complete
 
 ## Session Continuity
 
-Last session: 2026-04-10 00:00
-Stopped at: Initial roadmap creation complete; Phase 1 is ready for planning
+Last session: 2026-04-12 00:00
+Stopped at: v1.0 milestone archived
 Resume file: None

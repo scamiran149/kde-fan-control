@@ -8,30 +8,42 @@ KDE Fan Control is a Linux desktop fan-control application for machines where `f
 
 Users can safely and flexibly control desktop fan behavior with understandable per-fan PID policies, without losing fail-safe behavior.
 
+## Current State
+
+**Shipped v1.0 MVP** (2026-04-12)
+- ~8,280 LOC Rust (daemon + CLI + core), ~5,462 LOC C++, ~5,462 LOC QML
+- Tech stack: Rust (Tokio + zbus + clap), Qt6 + Kirigami + KStatusNotifierItem
+- 4 phases, 15 plans, 29 tasks, 77 commits
+- All 52 v1 requirements validated
+
+## Next Milestone Goals
+
+- TBD via `/gsd-new-milestone`
+
 ## Requirements
 
 ### Validated
 
-(None yet — ship to validate)
+- ✓ Discover supported temperature sensors, fan channels, and control interfaces from Linux hardware nodes — v1.0
+- ✓ Allow users to assign friendly names to sensors and fan controllers — v1.0
+- ✓ Allow each fan to remain under BIOS control or be managed by the daemon — v1.0
+- ✓ Auto-start management for enrolled fans on boot from the persisted active configuration — v1.0
+- ✓ Allow each controlled fan to choose a temperature source or a sensor aggregation — v1.0
+- ✓ Support sensor aggregation functions including average, max, min, and median — v1.0
+- ✓ Allow each controlled fan to define a target temperature setpoint — v1.0
+- ✓ Run per-fan PID loops with configurable P, I, and D terms — v1.0
+- ✓ Provide basic PID auto-tuning for controlled fans — v1.0
+- ✓ Surface partially supported or unavailable hardware while refusing unsafe enrollment — v1.0
+- ✓ Support PWM or voltage control mode when exposed by hardware — v1.0
+- ✓ Expose hardware, configuration, and runtime control over DBus — v1.0
+- ✓ Persist a single active configuration in the daemon — v1.0
+- ✓ Provide a CLI for inspection and configuration — v1.0
+- ✓ Provide an attractive KDE/Qt6 GUI with system tray integration — v1.0
+- ✓ On daemon failure, set previously daemon-controlled fans to high speed — v1.0
 
 ### Active
 
-- [ ] Discover supported temperature sensors, fan channels, and control interfaces from Linux hardware nodes
-- [ ] Allow users to assign friendly names to sensors and fan controllers
-- [ ] Allow each fan to remain under BIOS control or be managed by the daemon
-- [ ] Auto-start management for enrolled fans on boot from the persisted active configuration
-- [ ] Allow each controlled fan to choose a temperature source or a sensor aggregation
-- [ ] Support sensor aggregation functions including average, max, min, and median
-- [ ] Allow each controlled fan to define a target temperature setpoint
-- [ ] Run per-fan PID loops with configurable P, I, and D terms
-- [ ] Provide basic PID auto-tuning for controlled fans
-- [ ] Surface partially supported or unavailable hardware while refusing unsafe enrollment
-- [ ] Support PWM or voltage control mode when exposed by hardware
-- [ ] Expose hardware, configuration, and runtime control over DBus
-- [ ] Persist a single active configuration in the daemon
-- [ ] Provide a CLI for inspection and configuration
-- [ ] Provide an attractive KDE/Qt6 GUI with system tray integration
-- [ ] On daemon failure, set previously daemon-controlled fans to high speed
+(None yet — next milestone will define fresh requirements)
 
 ### Out of Scope
 
@@ -43,15 +55,16 @@ Users can safely and flexibly control desktop fan behavior with understandable p
 
 ## Context
 
-This project targets Linux desktop systems with hardware-exposed fan and sensor interfaces, primarily through sysfs hwmon and related kernel interfaces. The system should prefer direct understanding of Linux hardware nodes, while remaining open to using `lm-sensors` and `sensors-detect` as optional discovery assistance rather than required runtime dependencies.
+Shipped v1.0 with ~8,280 LOC Rust and ~10,924 LOC C++/QML across 104 files.
+Tech stack: Rust (Tokio 1.x + zbus 5.x + clap 4.x), Qt6 + Kirigami 6 + KStatusNotifierItem.
 
-The user interaction model is split between a privileged backend and unprivileged frontends. DBus is the primary API boundary. The daemon owns persistence and authoritative runtime state; CLI and GUI clients should behave as control and monitoring surfaces rather than direct config-file editors.
+The system successfully implements: hardware inventory via sysfs hwmon, draft/apply config lifecycle, boot reconciliation with degraded state, safe-maximum fallback for owned fans, per-fan PID temperature control with auto-tune, and a KDE-native GUI with system tray and notifications.
 
-Safety is central. The daemon must avoid interfering with fans left under BIOS control, drive previously controlled fans to a safe high-speed state if the service exits unexpectedly or fails, and auto-manage enrolled fans on boot from the persisted configuration. Writable control without tach feedback is acceptable, but safe enrollment still depends on confidence that the daemon can both control the fan and force a safe maximum output when needed.
+Known technical debt: StatusMonitor uses polling instead of reactive DBus signal subscriptions; KF6 dev packages need proper CMake support; some GUI navigation stubs remain (tray→main window, popover integration).
 
-The GUI should feel native in KDE and use Qt6/QML patterns, including tray-based visibility for quick inspection and access. The backend and CLI should be implemented in Rust.
+The user interaction model is split between a privileged backend and unprivileged frontends. DBus is the primary API boundary with read-open/write-privileged access. The daemon owns persistence and authoritative runtime state; CLI and GUI are thin control surfaces.
 
-Continuously self-tuning or fuzzy PID control is interesting, especially from industrial control and PLC ecosystems, but should be treated as a research track rather than a v1 requirement.
+Safety is central. The daemon avoids interfering with BIOS-managed fans, drives owned fans to safe-maximum on failure, and auto-manages enrolled fans on boot. Fallback incidents are persisted and inspectable across restarts.
 
 ## Constraints
 
@@ -69,16 +82,23 @@ Continuously self-tuning or fuzzy PID control is interesting, especially from in
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| KDE/Qt6-first GUI | Prioritize a strong native KDE desktop experience instead of generic lowest-common-denominator UI | — Pending |
-| Rust daemon and CLI with Qt6/QML GUI | Split the system along natural strengths for systems work and desktop UI | — Pending |
-| DBus as primary management API | Keeps the daemon authoritative and unifies CLI and GUI behavior | — Pending |
-| Daemon-owned persistence | Avoids split-brain config management across clients | — Pending |
-| Single active persisted configuration in v1 | Reduces complexity while leaving room for profiles later | — Pending |
-| Enrolled fans are continuously daemon-owned | Keeps runtime semantics and safety behavior explicit | — Pending |
-| Managed fans auto-start on boot | Restores the intended cooling policy without extra user action after reboot | — Pending |
-| Multiple sensor aggregation modes in v1 | Desktop thermal control often needs more than a single sensor | — Pending |
-| Optional lm-sensors assistance | Improves discovery without making users depend on another layer for core control | — Pending |
-| Fail-safe high-speed fallback for controlled fans | Safety behavior must match or exceed fancontrol expectations | — Pending |
+| KDE/Qt6-first GUI | Prioritize a strong native KDE desktop experience instead of generic lowest-common-denominator UI | ✓ Good |
+| Rust daemon and CLI with Qt6/QML GUI | Split the system along natural strengths for systems work and desktop UI | ✓ Good |
+| DBus as primary management API | Keeps the daemon authoritative and unifies CLI and GUI behavior | ✓ Good |
+| Daemon-owned persistence | Avoids split-brain config management across clients | ✓ Good |
+| Single active persisted configuration in v1 | Reduces complexity while leaving room for profiles later | ✓ Good |
+| Enrolled fans are continuously daemon-owned | Keeps runtime semantics and safety behavior explicit | ✓ Good |
+| Managed fans auto-start on boot | Restores the intended cooling policy without extra user action after reboot | ✓ Good |
+| Multiple sensor aggregation modes in v1 | Desktop thermal control often needs more than a single sensor | ✓ Good |
+| Optional lm-sensors assistance | Improves discovery without making users depend on another layer for core control | ✓ Good |
+| Fail-safe high-speed fallback for controlled fans | Safety behavior must match or exceed fancontrol expectations | ✓ Good |
+| Draft/apply config pattern | No write-through to live config; explicit promotion prevents accidental changes | ✓ Good |
+| Best-effort partial apply | Valid fans promoted, invalid ones reported; no all-or-nothing blocking | ✓ Good |
+| Read-open/write-privileged DBus access | Unprivileged reads for monitoring; root-only writes for safety | ✓ Good |
+| PID output as logical 0-100% | Hardware-specific scaling deferred to actuator helpers | ✓ Good |
+| StatusMonitor uses refreshAll() polling | Qt6 QDBusConnection::connect() lacks lambda support | ⚠️ Revisit |
+| serde(default) for backward-compatible config | Phase 2 TOML configs deserialize with safe defaults | ✓ Good |
+| KF5 compat headers for KNotifications | KF6 dev packages not available; linking .so.6 directly | ⚠️ Revisit |
 
 ## Evolution
 
@@ -98,4 +118,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-10 after initialization*
+*Last updated: 2026-04-12 after v1.0 milestone*
