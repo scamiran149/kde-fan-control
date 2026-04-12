@@ -58,6 +58,11 @@ Kirigami.ApplicationWindow {
         id: wizardDialog
     }
 
+    // Tray popover view — shown when the tray icon is activated
+    TrayPopover {
+        id: trayPopover
+    }
+
     pageStack.initialPage: overviewPage
 
     Connections {
@@ -70,6 +75,15 @@ Kirigami.ApplicationWindow {
         }
         function onControlStatusResult(json) {
             statusMonitor.onControlStatusResult(json)
+        }
+    }
+
+    Connections {
+        target: trayIcon
+        function onActivateMainWindow() {
+            root.show()
+            root.raise()
+            root.activate()
         }
     }
 }

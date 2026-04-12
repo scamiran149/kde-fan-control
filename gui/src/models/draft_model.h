@@ -43,6 +43,14 @@ class DraftModel : public QObject
     Q_PROPERTY(bool hasApplyError READ hasApplyError NOTIFY applyStateChanged)
     Q_PROPERTY(QStringList applyErrors READ applyErrors NOTIFY applyStateChanged)
 
+    // Advanced controls (cadence, deadband, actuator policy)
+    Q_PROPERTY(int sampleIntervalMs READ sampleIntervalMs NOTIFY advancedControlsChanged)
+    Q_PROPERTY(int controlIntervalMs READ controlIntervalMs NOTIFY advancedControlsChanged)
+    Q_PROPERTY(int writeIntervalMs READ writeIntervalMs NOTIFY advancedControlsChanged)
+    Q_PROPERTY(int deadbandMillidegrees READ deadbandMillidegrees NOTIFY advancedControlsChanged)
+    Q_PROPERTY(double outputMinPercent READ outputMinPercent NOTIFY advancedControlsChanged)
+    Q_PROPERTY(double outputMaxPercent READ outputMaxPercent NOTIFY advancedControlsChanged)
+
 public:
     explicit DraftModel(DaemonInterface *daemon, QObject *parent = nullptr);
 
@@ -83,6 +91,14 @@ public:
     bool hasApplyError() const { return m_hasApplyError; }
     QStringList applyErrors() const { return m_applyErrors; }
 
+    // Advanced controls getters
+    int sampleIntervalMs() const { return m_sampleIntervalMs; }
+    int controlIntervalMs() const { return m_controlIntervalMs; }
+    int writeIntervalMs() const { return m_writeIntervalMs; }
+    int deadbandMillidegrees() const { return m_deadbandMillidegrees; }
+    double outputMinPercent() const { return m_outputMinPercent; }
+    double outputMaxPercent() const { return m_outputMaxPercent; }
+
     // --- Q_INVOKABLE methods for DBus operations ---
 
     Q_INVOKABLE void loadFan(const QString &fanId);
@@ -99,6 +115,11 @@ public:
     Q_INVOKABLE void acceptAutoTuneProposal();
     Q_INVOKABLE void dismissAutoTuneProposal();
 
+    // Advanced controls setters — send profile updates through daemon
+    Q_INVOKABLE void setAdvancedCadence(int sampleMs, int controlMs, int writeMs);
+    Q_INVOKABLE void setDeadbandMillidegrees(int millideg);
+    Q_INVOKABLE void setOutputRange(double minPercent, double maxPercent);
+
 signals:
     void fanIdChanged();
     void enrolledChanged();
@@ -112,6 +133,7 @@ signals:
     void autoTuneProposalChanged();
     void validationStateChanged();
     void applyStateChanged();
+    void advancedControlsChanged();
 
 private slots:
     void onDraftConfigResult(const QString &json);
@@ -154,6 +176,14 @@ private:
     // Cached config JSONs for reloading
     QString m_cachedDraftJson;
     QString m_cachedAppliedJson;
+
+    // Advanced controls state
+    int m_sampleIntervalMs = 1000;
+    int m_controlIntervalMs = 2000;
+    int m_writeIntervalMs = 2000;
+    int m_deadbandMillidegrees = 1000; // 1.0 °C default
+    double m_outputMinPercent = 0.0;
+    double m_outputMaxPercent = 100.0;
 };
 
 #endif // DRAFT_MODEL_H

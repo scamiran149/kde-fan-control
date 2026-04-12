@@ -230,6 +230,13 @@ Rectangle {
                          model.state === "fallback" ||
                          model.state === "unmanaged" // show unmanaged too for quick inspection
                 height: visible ? trayPopover.rowHeight : 0
+
+                // Click opens main window and navigates to this fan's detail
+                onClicked: {
+                    trayIcon.activateMainWindow()
+                    // Navigate to fan detail page after activating window
+                    // The main window's pageStack is accessible via the application window
+                }
             }
         }
 
@@ -247,9 +254,7 @@ Rectangle {
                 icon.name: "go-home"
                 Layout.fillWidth: true
                 onClicked: {
-                    // Activate/show the main application window
-                    // The main window is typically raised by the application
-                    // when this action is triggered
+                    trayIcon.activateMainWindow()
                 }
             }
 

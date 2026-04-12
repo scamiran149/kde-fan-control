@@ -41,10 +41,7 @@ TrayIcon::TrayIcon(StatusMonitor *statusMonitor,
 
     // Context menu actions
     auto *openAction = new QAction(QStringLiteral("Open Fan Control"), this);
-    connect(openAction, &QAction::triggered, this, []() {
-        // Emit to QML/main window to activate/show
-        // The main window visibility is managed by the QML layer
-    });
+    connect(openAction, &QAction::triggered, this, &TrayIcon::activateMainWindow);
 
     auto *ackAction = new QAction(QStringLiteral("Acknowledge alerts"), this);
     connect(ackAction, &QAction::triggered, this, &TrayIcon::acknowledgeAlerts);
@@ -60,6 +57,11 @@ TrayIcon::TrayIcon(StatusMonitor *statusMonitor,
     menu->addAction(quitAction);
 
     m_sni->setContextMenu(menu);
+
+    // When the tray icon is clicked (activateRequested), show/raise
+    // the main window. The QML layer can additionally show the popover.
+    connect(m_sni, &KStatusNotifierItem::activateRequested,
+            this, &TrayIcon::activateMainWindow);
 
     // Connect to StatusMonitor for daemon state changes
     connect(m_statusMonitor, &StatusMonitor::daemonConnectedChanged,
@@ -262,3 +264,4 @@ KStatusNotifierItem::ItemStatus TrayIcon::severityStatus(const QString &severity
     // unmanaged or disconnected -> Passive
     return KStatusNotifierItem::Passive;
 }
+

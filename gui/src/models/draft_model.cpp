@@ -258,6 +258,39 @@ void DraftModel::dismissAutoTuneProposal()
     }
 }
 
+void DraftModel::setAdvancedCadence(int sampleMs, int controlMs, int writeMs)
+{
+    QJsonObject cadenceObj;
+    cadenceObj[QStringLiteral("sample_interval_ms")] = sampleMs;
+    cadenceObj[QStringLiteral("control_interval_ms")] = controlMs;
+    cadenceObj[QStringLiteral("write_interval_ms")] = writeMs;
+
+    QJsonObject profileObj = buildProfileJson();
+    profileObj[QStringLiteral("cadence")] = cadenceObj;
+
+    m_daemon->setDraftFanControlProfile(m_fanId, QJsonDocument(profileObj).toJson(QJsonDocument::Compact));
+}
+
+void DraftModel::setDeadbandMillidegrees(int millideg)
+{
+    QJsonObject profileObj = buildProfileJson();
+    profileObj[QStringLiteral("deadband_millidegrees")] = millideg;
+
+    m_daemon->setDraftFanControlProfile(m_fanId, QJsonDocument(profileObj).toJson(QJsonDocument::Compact));
+}
+
+void DraftModel::setOutputRange(double minPercent, double maxPercent)
+{
+    QJsonObject policyObj;
+    policyObj[QStringLiteral("output_min_percent")] = minPercent;
+    policyObj[QStringLiteral("output_max_percent")] = maxPercent;
+
+    QJsonObject profileObj = buildProfileJson();
+    profileObj[QStringLiteral("actuator_policy")] = policyObj;
+
+    m_daemon->setDraftFanControlProfile(m_fanId, QJsonDocument(profileObj).toJson(QJsonDocument::Compact));
+}
+
 // --- Private helpers ---
 
 void DraftModel::clearValidationState()
@@ -402,6 +435,31 @@ void DraftModel::parseFanEntry(const QJsonObject &fanObj)
         m_ki = ki;
         m_kd = kd;
         Q_EMIT pidGainsChanged();
+    }
+
+    // Parse cadence
+    QJsonObject cadenceObj = fanObj.value(QStringLiteral("cadence")).toObject();
+    int sampleMs = static_cast<int>(cadenceObj.value(QStringLiteral("sample_interval_ms")).toVariant().toLongLong());
+    int controlMs = static_cast<int>(cadenceObj.value(QStringLiteral("control_interval_ms")).toVariant().toLongLong());
+    int writeMs = static_cast<int>(cadenceObj.value(QStringLiteral("write_interval_ms")).toVariant().toLongLong());
+
+    // Parse deadband
+    qint64 deadband = fanObj.value(QStringLiteral("deadband_millidegrees")).toVariant().toLongLong();
+
+    // Parse actuator policy
+    QJsonObject policyObj = fanObj.value(QStringLiteral("actuator_policy")).toObject();
+    double outMin = policyObj.value(QStringLiteral("output_min_percent")).toDouble(0.0);
+    double outMax = policyObj.value(QStringLiteral("output_max_percent")).toDouble(100.0);
+
+    bool advancedChanged = false;
+    if (m_sampleIntervalMs != sampleMs) { m_sampleIntervalMs = sampleMs; advancedChanged = true; }
+    if (m_controlIntervalMs != controlMs) { m_controlIntervalMs = controlMs; advancedChanged = true; }
+    if (m_writeIntervalMs != writeMs) { m_writeIntervalMs = writeMs; advancedChanged = true; }
+    if (m_deadbandMillidegrees != static_cast<int>(deadband)) { m_deadbandMillidegrees = static_cast<int>(deadband); advancedChanged = true; }
+    if (!qFuzzyCompare(m_outputMinPercent, outMin)) { m_outputMinPercent = outMin; advancedChanged = true; }
+    if (!qFuzzyCompare(m_outputMaxPercent, outMax)) { m_outputMaxPercent = outMax; advancedChanged = true; }
+    if (advancedChanged) {
+        Q_EMIT advancedControlsChanged();
     }
 }
 

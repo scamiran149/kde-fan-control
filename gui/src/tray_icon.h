@@ -52,6 +52,7 @@ signals:
     void alertCountChanged();
     void daemonConnectedChanged();
     void hasStickyAlertsChanged();
+    void activateMainWindow();
 
 public slots:
     void updateSeverity();

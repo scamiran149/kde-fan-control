@@ -583,11 +583,9 @@ Kirigami.ScrollablePage {
                         from: 250
                         to: 60000
                         stepSize: 100
-                        value: 1000
+                        value: draftModel.sampleIntervalMs
+                        onValueModified: draftModel.setAdvancedCadence(value, draftModel.controlIntervalMs, draftModel.writeIntervalMs)
                         enabled: draftModel.enrolled
-                        // These advanced fields will be wired via draft model
-                        // in a future enhancement once the daemon exposes them
-                        // in setDraftFanControlProfile
                     }
 
                     Controls.SpinBox {
@@ -595,7 +593,8 @@ Kirigami.ScrollablePage {
                         from: 250
                         to: 60000
                         stepSize: 100
-                        value: 2000
+                        value: draftModel.controlIntervalMs
+                        onValueModified: draftModel.setAdvancedCadence(draftModel.sampleIntervalMs, value, draftModel.writeIntervalMs)
                         enabled: draftModel.enrolled
                     }
 
@@ -604,7 +603,8 @@ Kirigami.ScrollablePage {
                         from: 250
                         to: 60000
                         stepSize: 100
-                        value: 2000
+                        value: draftModel.writeIntervalMs
+                        onValueModified: draftModel.setAdvancedCadence(draftModel.sampleIntervalMs, draftModel.controlIntervalMs, value)
                         enabled: draftModel.enrolled
                     }
 
@@ -613,9 +613,10 @@ Kirigami.ScrollablePage {
                         from: 0
                         to: 1000  // 0.0 to 100.0 °C as tenths
                         stepSize: 1
-                        value: 10 // 1.0 °C default
+                        value: Math.round(draftModel.deadbandMillidegrees / 100)
                         textFromValue: function(v) { return (v / 10.0).toFixed(1) + " °C" }
                         valueFromText: function(text) { return Math.round(parseFloat(text) * 10) }
+                        onValueModified: draftModel.setDeadbandMillidegrees(value * 100)
                         enabled: draftModel.enrolled
                     }
 
@@ -624,9 +625,10 @@ Kirigami.ScrollablePage {
                         from: 0
                         to: 100
                         stepSize: 1
-                        value: 0
+                        value: Math.round(draftModel.outputMinPercent)
                         textFromValue: function(v) { return v + "%" }
                         valueFromText: function(text) { return parseInt(text) || 0 }
+                        onValueModified: draftModel.setOutputRange(value, draftModel.outputMaxPercent)
                         enabled: draftModel.enrolled
                     }
 
@@ -635,15 +637,16 @@ Kirigami.ScrollablePage {
                         from: 0
                         to: 100
                         stepSize: 1
-                        value: 100
+                        value: Math.round(draftModel.outputMaxPercent)
                         textFromValue: function(v) { return v + "%" }
                         valueFromText: function(text) { return parseInt(text) || 0 }
+                        onValueModified: draftModel.setOutputRange(draftModel.outputMinPercent, value)
                         enabled: draftModel.enrolled
                     }
 
                     Controls.Label {
                         Kirigami.FormData.label: i18n("PID limits")
-                        text: i18n("Integral and derivative clamps are shown in the daemon-provided defaults.")
+                        text: i18n("Integral and derivative clamps are set by daemon defaults.")
                         color: Kirigami.Theme.disabledTextColor
                         wrapMode: Text.WordWrap
                     }
