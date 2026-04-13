@@ -25,6 +25,24 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    header: Kirigami.ActionToolBar {
+        actions: [
+            Kirigami.Action {
+                id: toolbarAuthAction
+                text: daemonInterface.canWrite ? i18n("Lock") : i18n("Unlock")
+                icon.name: daemonInterface.canWrite ? "object-locked" : "object-unlocked"
+                visible: statusMonitor.daemonConnected
+                onTriggered: {
+                    if (daemonInterface.canWrite) {
+                        daemonInterface.dropAuthorization()
+                    } else {
+                        daemonInterface.requestAuthorization()
+                    }
+                }
+            }
+        ]
+    }
+
     globalDrawer: Kirigami.GlobalDrawer {
         isMenu: true
         actions: [
@@ -37,6 +55,22 @@ Kirigami.ApplicationWindow {
                 text: i18n("Inventory")
                 icon.name: "view-list-symbolic"
                 onTriggered: { pageStack.clear(); pageStack.push(inventoryPage) }
+            },
+            Kirigami.Action {
+                separator: true
+            },
+            Kirigami.Action {
+                id: authAction
+                text: daemonInterface.canWrite ? i18n("Lock") : i18n("Unlock")
+                icon.name: daemonInterface.canWrite ? "object-locked" : "object-unlocked"
+                visible: statusMonitor.daemonConnected
+                onTriggered: {
+                    if (daemonInterface.canWrite) {
+                        daemonInterface.dropAuthorization()
+                    } else {
+                        daemonInterface.requestAuthorization()
+                    }
+                }
             },
             Kirigami.Action {
                 separator: true

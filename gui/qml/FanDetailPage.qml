@@ -225,7 +225,7 @@ Kirigami.Page {
         Kirigami.InlineMessage {
             Layout.fillWidth: true
             type: Kirigami.MessageType.Information
-            text: i18n("This session is read-only. Run the GUI as root to edit draft settings, validate, or apply changes.")
+            text: i18n("This session is read-only. Click Unlock in the menu to authorize changes.")
             visible: statusMonitor.daemonConnected && !daemonInterface.canWrite
             showCloseButton: true
         }

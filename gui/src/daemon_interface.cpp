@@ -12,8 +12,6 @@
 #include <QDBusConnectionInterface>
 #include <QDebug>
 
-#include <unistd.h>
-
 DaemonInterface::DaemonInterface(QObject *parent)
     : QObject(parent)
     , m_inventoryIface(s_service, s_path, s_inventoryIface, QDBusConnection::systemBus())
@@ -54,7 +52,21 @@ QDBusConnection DaemonInterface::systemBus() const
 
 bool DaemonInterface::canWrite() const
 {
-    return ::geteuid() == 0;
+    return m_canWrite;
+}
+
+void DaemonInterface::requestAuthorization()
+{
+    callAsyncVoid(s_lifecycleIface, QStringLiteral("RequestAuthorization"),
+                  {}, QStringLiteral("requestAuthorization"));
+}
+
+void DaemonInterface::dropAuthorization()
+{
+    if (m_canWrite) {
+        m_canWrite = false;
+        Q_EMIT canWriteChanged();
+    }
 }
 
 void DaemonInterface::setConnected(bool connected)
@@ -62,6 +74,10 @@ void DaemonInterface::setConnected(bool connected)
     if (m_connected != connected) {
         m_connected = connected;
         Q_EMIT connectedChanged();
+    }
+    if (!connected && m_canWrite) {
+        m_canWrite = false;
+        Q_EMIT canWriteChanged();
     }
 }
 
@@ -330,12 +346,24 @@ void DaemonInterface::callAsyncVoid(
                                  qInfo().noquote() << QStringLiteral("KFC_GUI_DEBUG callAsyncVoid FAILED: %1 %2").arg(writeMethodLabel, reply.error().message());
                              }
                              handleDBusError(writeMethodLabel, reply.error());
+                             if (writeMethodLabel == QLatin1String("requestAuthorization")) {
+                                 if (m_canWrite) {
+                                     m_canWrite = false;
+                                     Q_EMIT canWriteChanged();
+                                 }
+                             }
                              Q_EMIT writeFailed(writeMethodLabel, reply.error().message());
                          } else {
                              if (qEnvironmentVariableIsSet("KFC_GUI_DEBUG")) {
                                  qInfo().noquote() << QStringLiteral("KFC_GUI_DEBUG callAsyncVoid OK: %1").arg(writeMethodLabel);
                              }
                              setLastError(QString());
+                             if (writeMethodLabel == QLatin1String("requestAuthorization")) {
+                                 if (!m_canWrite) {
+                                     m_canWrite = true;
+                                     Q_EMIT canWriteChanged();
+                                 }
+                             }
                              Q_EMIT writeSucceeded(writeMethodLabel);
                          }
                      });

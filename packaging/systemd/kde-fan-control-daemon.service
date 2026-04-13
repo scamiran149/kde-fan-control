@@ -1,0 +1,25 @@
+[Unit]
+Description=KDE Fan Control Daemon
+Documentation=https://github.com/scamiran149/kde-fan-control
+After=sys-subsystem-hwmon.device
+Wants=sys-subsystem-hwmon.device
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/libexec/kde-fan-control-daemon
+ExecStopPost=/usr/libexec/kde-fan-control-fallback
+Restart=on-failure
+RestartSec=5
+WatchdogSec=60
+
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+CapabilityBoundingSet=CAP_SYS_RAWIO
+AmbientCapabilities=CAP_SYS_RAWIO
+ReadWritePaths=/sys/class/hwmon /var/lib/kde-fan-control
+
+[Install]
+WantedBy=multi-user.target

@@ -45,7 +45,9 @@ kde-fan-control/
 │   ├── data/          # kdefancontrol.notifyrc
 │   └── CMakeLists.txt
 ├── packaging/
-│   └── dbus/          # DBus system bus policy
+│   ├── dbus/          # DBus system bus policy + activation
+│   ├── systemd/       # systemd unit file
+│   └── polkit/        # polkit authorization policy
 └── Cargo.toml         # Rust workspace root
 ```
 
@@ -65,9 +67,10 @@ cargo test
 cargo test -- --nocapture
 ```
 
-The workspace produces 3 binaries:
+The workspace produces 4 binaries:
 - `target/debug/kde-fan-control-daemon` (or `target/release/`)
 - `target/debug/kde-fan-control` (CLI)
+- `target/debug/kde-fan-control-fallback` (ExecStopPost helper)
 - Core crate is a library — no standalone binary
 
 ## Building the GUI
@@ -114,9 +117,26 @@ The daemon's session-bus mode is a development convenience. Production use alway
 # Install DBus policy first (one-time)
 sudo cp packaging/dbus/org.kde.FanControl.conf /usr/share/dbus-1/system.d/
 
-# Start daemon
+# Install DBus activation (one-time, delegates to systemd)
+sudo cp packaging/dbus/org.kde.FanControl.service /usr/share/dbus-1/system-services/
+
+# Install polkit policy (one-time)
+sudo cp packaging/polkit/org.kde.fancontrol.policy /usr/share/polkit-1/actions/
+
+# Install systemd unit (one-time)
+sudo cp packaging/systemd/kde-fan-control-daemon.service /usr/lib/systemd/system/
+sudo systemctl daemon-reload
+
+# Option A: Start via systemd (recommended)
+sudo systemctl enable --now kde-fan-control-daemon
+
+# Option B: Start manually
 sudo ./target/release/kde-fan-control-daemon
 ```
+
+With systemd, the daemon sends `READY=1` after DBus name acquisition and
+`WATCHDOG=1` every 20 seconds. The `ExecStopPost=` fallback helper forces
+PWM 255 for all owned fans even on crash/SIGKILL.
 
 ### Direct inventory scan (no daemon)
 

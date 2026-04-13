@@ -59,6 +59,18 @@ On next daemon start:
 
 If a `FallbackIncident` was persisted from a previous crash, it is loaded and shown in lifecycle events. The incident is cleared once fans are successfully restored.
 
+### Layer 5 — ExecStopPost Fallback Helper
+
+A standalone binary (`kde-fan-control-fallback`) configured as systemd
+`ExecStopPost=`. Runs **after** the daemon process exits, regardless of exit
+status (clean exit, crash, SIGKILL). Reads the persisted owned-fan list from
+`/var/lib/kde-fan-control/owned-fans.json` and writes `pwmN_enable=1` and
+`pwmN=255` for each fan. No async, no DBus — uses `std::fs` only.
+
+The daemon persists the owned-fan list after every ownership change (enrollment,
+removal, boot reconciliation, apply). This ensures the fallback helper always
+has an up-to-date view of which fans need recovery.
+
 ---
 
 ## BIOS Compatibility
@@ -75,7 +87,7 @@ If a `FallbackIncident` was persisted from a previous crash, it is loaded and sh
 | Scenario | Behavior |
 |---|---|
 | **Daemon crashes (Rust panic)** | Panic hook fires → writes PWM 255 for all owned fans via `PanicFallbackMirror` → records incident → process aborts. Systemd `Restart=on-failure` restarts the daemon → boot reconciliation restores managed fans. |
-| **Daemon killed (`SIGKILL`)** | No cleanup possible. Fans stay at last PWM value. Systemd restarts daemon → boot reconciliation restores managed fans. (Planned: systemd `ExecStopPost=` helper that forces PWM 255 on crash.) |
+| **Daemon killed (`SIGKILL`)** | No in-process cleanup possible. Systemd `ExecStopPost=` runs the fallback helper (`kde-fan-control-fallback`), which reads `/var/lib/kde-fan-control/owned-fans.json` and writes PWM 255 for each listed fan. Systemd then restarts the daemon → boot reconciliation restores managed fans. |
 | **Daemon upgraded (package update)** | prerm stops daemon → graceful shutdown path → fans at PWM 255 → postinst starts new daemon → boot reconciliation. |
 | **Hardware disappears mid-run** | Control task detects write failure → writes targeted fallback → releases ownership → marks degraded → other fans continue. |
 | **Sensor disappears mid-run** | Sample interval fails to read temp → `degrade_and_stop()` → fan gets fallback → control task terminates. |
