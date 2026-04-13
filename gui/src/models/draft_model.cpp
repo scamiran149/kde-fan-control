@@ -11,6 +11,12 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QDebug>
+#include <QProcessEnvironment>
+
+static bool kfcDebug() {
+    static bool s = qEnvironmentVariableIsSet("KFC_GUI_DEBUG");
+    return s;
+}
 
 DraftModel::DraftModel(DaemonInterface *daemon, QObject *parent)
     : QObject(parent)
@@ -41,6 +47,28 @@ void DraftModel::setFanId(const QString &id)
 
 void DraftModel::loadFan(const QString &fanId)
 {
+    if (kfcDebug()) qInfo().noquote() << "KFC_GUI_DEBUG draftModel::loadFan" << fanId;
+
+    // Reset all editable properties to defaults immediately so the UI
+    // doesn't show the previous fan's values during the async DBus response.
+    setEnrolled(false);
+    setControlMode(QStringLiteral("pwm"));
+    setSensorIds(QStringList());
+    setAggregation(QStringLiteral("average"));
+    m_targetTempMillidegrees = 0;
+    Q_EMIT targetTempCelsiusChanged();
+    m_kp = 1.0; m_ki = 1.0; m_kd = 0.5;
+    Q_EMIT pidGainsChanged();
+    m_proposedKp = 0; m_proposedKi = 0; m_proposedKd = 0;
+    Q_EMIT autoTuneProposalChanged();
+    m_sampleIntervalMs = 1000;
+    m_controlIntervalMs = 2000;
+    m_writeIntervalMs = 2000;
+    m_deadbandMillidegrees = 1000;
+    m_outputMinPercent = 0.0;
+    m_outputMaxPercent = 100.0;
+    Q_EMIT advancedControlsChanged();
+
     setFanId(fanId);
     clearValidationState();
     clearApplyState();
@@ -66,14 +94,28 @@ void DraftModel::setEnrolled(bool enrolled)
 
 void DraftModel::setEnrolledViaDBus(bool enrolled)
 {
+    if (kfcDebug()) qInfo().noquote() << "KFC_GUI_DEBUG draftModel::setEnrolledViaDBus" << enrolled;
     setEnrolled(enrolled);
-    m_daemon->setDraftFanEnrollment(
-        m_fanId,
-        enrolled,
-        m_controlMode.isEmpty() ? QStringLiteral("pwm") : m_controlMode,
-        m_sensorIds,
-        m_aggregation.isEmpty() ? QStringLiteral("average") : m_aggregation
-    );
+    if (enrolled) {
+        m_daemon->setDraftFanEnrollment(
+            m_fanId,
+            enrolled,
+            m_controlMode.isEmpty() ? QStringLiteral("pwm") : m_controlMode,
+            m_sensorIds
+        );
+        if (!m_aggregation.isEmpty() && m_aggregation != QStringLiteral("average")) {
+            QJsonObject profileObj;
+            profileObj[QStringLiteral("aggregation")] = m_aggregation;
+            m_daemon->setDraftFanControlProfile(m_fanId, QJsonDocument(profileObj).toJson(QJsonDocument::Compact));
+        }
+    } else {
+        // Unenrolling: remove the fan from the draft entirely rather than
+        // sending a full DraftFanEntry with managed=false, which would
+        // wipe the fan's existing settings (target temp, PID gains, etc.).
+        // Removing from draft means apply_draft will preserve the fan's
+        // previous applied config if one exists.
+        m_daemon->removeDraftFan(m_fanId);
+    }
 }
 
 // --- Control mode ---
@@ -88,13 +130,13 @@ void DraftModel::setControlMode(const QString &mode)
 
 void DraftModel::setControlModeViaDBus(const QString &mode)
 {
+    if (kfcDebug()) qInfo().noquote() << "KFC_GUI_DEBUG draftModel::setControlModeViaDBus" << mode;
     setControlMode(mode);
     m_daemon->setDraftFanEnrollment(
         m_fanId,
         m_enrolled,
         mode,
-        m_sensorIds,
-        m_aggregation.isEmpty() ? QStringLiteral("average") : m_aggregation
+        m_sensorIds
     );
 }
 
@@ -110,6 +152,7 @@ void DraftModel::setSensorIds(const QStringList &ids)
 
 void DraftModel::setSensorIdsViaDBus(const QStringList &sensorIds)
 {
+    if (kfcDebug()) qInfo().noquote() << "KFC_GUI_DEBUG draftModel::setSensorIdsViaDBus" << sensorIds;
     setSensorIds(sensorIds);
     QJsonObject profileObj;
     QJsonArray sourcesArr;
@@ -343,6 +386,7 @@ QJsonObject DraftModel::buildProfileJson() const
 
 void DraftModel::onDraftConfigResult(const QString &json)
 {
+    if (kfcDebug()) qInfo().noquote() << "KFC_GUI_DEBUG draftModel::onDraftConfigResult fanId=" << m_fanId << "len=" << json.length();
     m_cachedDraftJson = json;
     if (m_fanId.isEmpty()) return;
 
@@ -367,7 +411,7 @@ void DraftModel::onDraftConfigResult(const QString &json)
             setAggregation(QStringLiteral("average"));
             m_targetTempMillidegrees = 0;
             Q_EMIT targetTempCelsiusChanged();
-            m_kp = 1.0; m_ki = 0.1; m_kd = 0.5;
+            m_kp = 1.0; m_ki = 1.0; m_kd = 0.5;
             Q_EMIT pidGainsChanged();
         }
         return;
@@ -488,6 +532,7 @@ void DraftModel::parseAppliedForFan(const QString &appliedJson)
 
 void DraftModel::onWriteSucceeded(const QString &method)
 {
+    if (kfcDebug()) qInfo().noquote() << "KFC_GUI_DEBUG draftModel::onWriteSucceeded" << method;
     // After write operations that change state, refresh the models.
     if (method == QStringLiteral("validateDraft")) {
         // Validation succeeded — the daemon returned success.
@@ -507,6 +552,7 @@ void DraftModel::onWriteSucceeded(const QString &method)
 
 void DraftModel::onWriteFailed(const QString &method, const QString &error)
 {
+    if (kfcDebug()) qInfo().noquote() << "KFC_GUI_DEBUG draftModel::onWriteFailed" << method << error;
     qWarning() << "DraftModel: write failed for" << method << ":" << error;
 
     // Surface authorization errors prominently per T-04-05

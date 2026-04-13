@@ -16,19 +16,9 @@ Users can safely and flexibly control desktop fan behavior with understandable p
 - 4 phases, 15 plans, 29 tasks, 77 commits
 - All 52 v1 requirements validated
 
-## Current Milestone: v1.1 Packaging & System Integration
+## Current Milestone: Awaiting Definition
 
-**Goal:** Make KDE Fan Control properly installable and desktop-integrated on Linux systems.
-
-**Target features:**
-- systemd unit file for the daemon (Type=notify, boot-enabled, watchdog)
-- .deb package as primary install target + install.sh as fallback
-- .desktop files for GUI (with embedded tray icon)
-- CLI placed in PATH (/usr/bin)
-- Polkit policy for daemon start/stop and config writes (superuser prompt)
-- DBus service and policy files installed system-wide
-- Standard FHS file layout
-- On-demand daemon start fallback if GUI launches but daemon isn't running
+Phases 5-8 (v1.1 Packaging & System Integration) have been removed for restructuring. Next milestone to be defined.
 
 ## Requirements
 
@@ -51,18 +41,18 @@ Users can safely and flexibly control desktop fan behavior with understandable p
 - ✓ Provide an attractive KDE/Qt6 GUI with system tray integration — v1.0
 - ✓ On daemon failure, set previously daemon-controlled fans to high speed — v1.0
 
-### Active
+### Deferred (from removed phases 5-8)
 
-- [ ] All installed artifacts follow standard FHS paths — v1.1
-- [ ] CLI binary installed to /usr/bin with kfc symlink — v1.1
-- [ ] systemd unit file with Type=notify, boot-enabled, watchdog, hardening — v1.1
-- [ ] ExecStopPost fallback helper for crash-safe fan recovery — v1.1
-- [ ] DBus service activation for on-demand daemon start — v1.1
-- [ ] polkit policy with granular actions and auth_admin_keep — v1.1
-- [ ] Daemon replaces UID=0 check with polkit CheckAuthorization — v1.1
-- [ ] .desktop file and SVG icon for the GUI — v1.1
-- [ ] .deb package with maintainer scripts — v1.1
-- [ ] install.sh fallback installer — v1.1
+- [ ] All installed artifacts follow standard FHS paths
+- [ ] CLI binary installed to /usr/bin with kfc symlink
+- [ ] systemd unit file with Type=notify, boot-enabled, watchdog, hardening
+- [ ] ExecStopPost fallback helper for crash-safe fan recovery
+- [ ] DBus service activation for on-demand daemon start
+- [ ] polkit policy with granular actions and auth_admin_keep
+- [ ] Daemon replaces UID=0 check with polkit CheckAuthorization
+- [ ] .desktop file and SVG icon for the GUI
+- [ ] .deb package with maintainer scripts
+- [ ] install.sh fallback installer
 
 ### Out of Scope
 
@@ -137,4 +127,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-11 after v1.1 milestone started*
+*Last updated: 2026-04-12 after removing phases 5-8 for restructuring*

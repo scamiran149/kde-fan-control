@@ -50,7 +50,7 @@ impl Default for PidGains {
     fn default() -> Self {
         Self {
             kp: 1.0,
-            ki: 0.1,
+            ki: 1.0,
             kd: 0.5,
         }
     }
@@ -66,9 +66,9 @@ pub struct ControlCadence {
 impl Default for ControlCadence {
     fn default() -> Self {
         Self {
-            sample_interval_ms: 1_000,
-            control_interval_ms: 2_000,
-            write_interval_ms: 2_000,
+            sample_interval_ms: 100,
+            control_interval_ms: 100,
+            write_interval_ms: 100,
         }
     }
 }
@@ -107,10 +107,10 @@ pub struct PidLimits {
 impl Default for PidLimits {
     fn default() -> Self {
         Self {
-            integral_min: -100.0,
-            integral_max: 100.0,
-            derivative_min: -50.0,
-            derivative_max: 50.0,
+            integral_min: -500.0,
+            integral_max: 500.0,
+            derivative_min: -5.0,
+            derivative_max: 5.0,
         }
     }
 }
@@ -192,43 +192,47 @@ impl PidController {
 
     pub fn update(&mut self, aggregated_temp_millidegrees: i64, dt_seconds: f64) -> PidOutput {
         let measurement = aggregated_temp_millidegrees as f64;
-        let error = measurement - self.target_temp_millidegrees as f64;
+        let error_millidegrees = measurement - self.target_temp_millidegrees as f64;
+        let error_degrees = error_millidegrees / 1_000.0;
         let safe_dt = dt_seconds.max(f64::EPSILON);
 
-        let derivative = self
+        let derivative_millidegrees_per_second = self
             .last_measurement_millidegrees
             .map(|last| (measurement - last) / safe_dt)
-            .unwrap_or(0.0)
+            .unwrap_or(0.0);
+        let derivative_degrees_per_second = derivative_millidegrees_per_second / 1_000.0;
+
+        let derivative_clamped = derivative_degrees_per_second
             .clamp(self.limits.derivative_min, self.limits.derivative_max);
 
-        if error.abs() <= self.deadband_millidegrees as f64 {
+        if error_millidegrees.abs() <= self.deadband_millidegrees as f64 {
             self.last_measurement_millidegrees = Some(measurement);
-            self.last_error_millidegrees = Some(error);
+            self.last_error_millidegrees = Some(error_millidegrees);
 
             return PidOutput {
                 logical_output_percent: self.last_output_percent.unwrap_or(0.0),
-                error_millidegrees: error,
-                derivative_millidegrees_per_second: derivative,
+                error_millidegrees,
+                derivative_millidegrees_per_second,
                 integral_state: self.integral_state,
             };
         }
 
-        self.integral_state = (self.integral_state + error * safe_dt)
+        self.integral_state = (self.integral_state + error_degrees * safe_dt)
             .clamp(self.limits.integral_min, self.limits.integral_max);
 
-        let output = (self.gains.kp * error
+        let output = (self.gains.kp * error_degrees
             + self.gains.ki * self.integral_state
-            + self.gains.kd * derivative)
+            + self.gains.kd * derivative_clamped)
             .clamp(0.0, 100.0);
 
         self.last_measurement_millidegrees = Some(measurement);
         self.last_output_percent = Some(output);
-        self.last_error_millidegrees = Some(error);
+        self.last_error_millidegrees = Some(error_millidegrees);
 
         PidOutput {
             logical_output_percent: output,
-            error_millidegrees: error,
-            derivative_millidegrees_per_second: derivative,
+            error_millidegrees,
+            derivative_millidegrees_per_second,
             integral_state: self.integral_state,
         }
     }
@@ -295,7 +299,7 @@ mod tests {
 
         approx_eq(first.logical_output_percent, 0.0);
         approx_eq(second.derivative_millidegrees_per_second, 3_000.0);
-        approx_eq(second.logical_output_percent, 100.0);
+        approx_eq(second.logical_output_percent, 3.0);
     }
 
     #[test]
@@ -343,8 +347,8 @@ mod tests {
         let output = controller.update(120_000, 1.0);
 
         approx_eq(output.integral_state, 10.0);
-        approx_eq(output.derivative_millidegrees_per_second, 5.0);
-        approx_eq(output.logical_output_percent, 100.0);
+        approx_eq(output.derivative_millidegrees_per_second, 40_000.0);
+        approx_eq(output.logical_output_percent, 31.0);
     }
 
     #[test]

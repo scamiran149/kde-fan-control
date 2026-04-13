@@ -44,6 +44,8 @@ public:
     Q_INVOKABLE void runtimeState();
     Q_INVOKABLE void controlStatus();
     Q_INVOKABLE void autoTuneResult(const QString &fanId);
+    Q_INVOKABLE void overviewStructure();
+    Q_INVOKABLE void overviewTelemetry();
 
     // --- Write methods (privileged, require root) ---
 
@@ -53,8 +55,7 @@ public:
     Q_INVOKABLE void removeFanName(const QString &id);
     Q_INVOKABLE void setDraftFanEnrollment(const QString &fanId, bool managed,
                                             const QString &controlMode,
-                                            const QStringList &tempSources,
-                                            const QString &aggregation);
+                                            const QStringList &tempSources);
     Q_INVOKABLE void removeDraftFan(const QString &fanId);
     Q_INVOKABLE void discardDraft();
     Q_INVOKABLE void validateDraft();
@@ -79,6 +80,8 @@ signals:
     void runtimeStateResult(const QString &json);
     void controlStatusResult(const QString &json);
     void autoTuneResultReady(const QString &fanId, const QString &json);
+    void overviewStructureResult(const QString &json);
+    void overviewTelemetryResult(const QString &json);
 
     // Emitted when write operations complete.
     void writeSucceeded(const QString &method);

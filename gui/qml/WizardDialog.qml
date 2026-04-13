@@ -45,6 +45,7 @@ Kirigami.Dialog {
 
     // Validation / apply state
     property bool validationAttempted: false
+    property bool applyAttempted: false
 
     // Total steps (aggregation step is conditional)
     readonly property int totalSteps: 7
@@ -78,6 +79,7 @@ Kirigami.Dialog {
 
     // Reset wizard when opening
     onOpened: {
+        console.log("KFC_GUI_DEBUG Wizard: opened, preselectedFanId=" + preselectedFanId)
         resetWizard()
         if (preselectedFanId !== "") {
             selectedFanId = preselectedFanId
@@ -87,6 +89,7 @@ Kirigami.Dialog {
     }
 
     function resetWizard() {
+        console.log("KFC_GUI_DEBUG Wizard: resetWizard")
         currentStep = 0
         selectedFanId = ""
         selectedControlMode = "pwm"
@@ -95,9 +98,11 @@ Kirigami.Dialog {
         selectedTargetTempCelsius = 65.0
         draftLoaded = false
         validationAttempted = false
+        applyAttempted = false
     }
 
     function loadFanIntoDraft(fanId) {
+        console.log("KFC_GUI_DEBUG Wizard: loadFanIntoDraft fanId=" + fanId)
         selectedFanId = fanId
         draftModel.loadFan(fanId)
         draftModel.setEnrolledViaDBus(true)
@@ -136,6 +141,7 @@ Kirigami.Dialog {
 
     // Navigate to next step (skip aggregation if not needed)
     function goNext() {
+        console.log("KFC_GUI_DEBUG Wizard: goNext from step " + currentStep)
         if (currentStep === stepSensor) {
             // Coming from sensor selection — skip aggregation if only 1 sensor
             if (selectedSensorIds.length < 2) {
@@ -150,6 +156,7 @@ Kirigami.Dialog {
 
     // Navigate to previous step (skip aggregation if not needed)
     function goBack() {
+        console.log("KFC_GUI_DEBUG Wizard: goBack from step " + currentStep)
         if (currentStep === stepTargetTemp && selectedSensorIds.length < 2) {
             // Skip aggregation step going back
             currentStep = stepSensor
@@ -160,6 +167,7 @@ Kirigami.Dialog {
 
     // Discard draft and close on cancellation
     function cancelWizard() {
+        console.log("KFC_GUI_DEBUG Wizard: cancelWizard draftLoaded=" + draftLoaded)
         if (draftLoaded) {
             draftModel.discardDraft()
         }
@@ -297,6 +305,7 @@ Kirigami.Dialog {
                     }
                     onActivated: {
                         selectedControlMode = model[currentIndex].toLowerCase()
+                        console.log("KFC_GUI_DEBUG Wizard: controlMode changed to " + selectedControlMode)
                         draftModel.setControlModeViaDBus(selectedControlMode)
                     }
                 }
@@ -356,6 +365,7 @@ Kirigami.Dialog {
                                         ids.push(model.sensorId)
                                     }
                                     selectedSensorIds = ids
+                                    console.log("KFC_GUI_DEBUG Wizard: sensor toggled sensorId=" + model.sensorId + " selectedSensorIds=" + JSON.stringify(ids))
                                     draftModel.setSensorIdsViaDBus(ids)
                                 }
                             }
@@ -794,6 +804,7 @@ Kirigami.Dialog {
                 enabled: statusMonitor.daemonConnected
                 onClicked: {
                     validationAttempted = true
+                    applyAttempted = true
                     draftModel.applyDraft()
                     // After apply, if no errors, close the wizard
                     // The apply result will show in the banner
@@ -808,7 +819,8 @@ Kirigami.Dialog {
     Connections {
         target: draftModel
         function onApplyStateChanged() {
-            if (!draftModel.hasApplyError && draftModel.applyErrors.length === 0) {
+            console.log("KFC_GUI_DEBUG Wizard: onApplyStateChanged hasApplyError=" + draftModel.hasApplyError + " applyAttempted=" + applyAttempted)
+            if (applyAttempted && !draftModel.hasApplyError && draftModel.applyErrors.length === 0) {
                 // Apply succeeded — schedule close after brief display
                 wizardDialog.applySucceeded = true
                 closeTimer.start()
@@ -828,6 +840,7 @@ Kirigami.Dialog {
 
     // Handle close: discard draft if not applied
     onClosed: {
+        console.log("KFC_GUI_DEBUG Wizard: onClosed applySucceeded=" + applySucceeded + " draftLoaded=" + draftLoaded)
         if (!applySucceeded && draftLoaded) {
             // If the user closed without applying, discard any draft
             // (but not if apply succeeded — the draft was promoted to applied config)
@@ -835,5 +848,6 @@ Kirigami.Dialog {
         }
         applySucceeded = false
         validationAttempted = false
+        applyAttempted = false
     }
 }

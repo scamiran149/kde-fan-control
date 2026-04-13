@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * Shows all fans with severity banners and live metrics.
+ * Uses overviewModel (OverviewModel) for the fast telemetry/
+ * structural split path, binding delegates directly to
+ * OverviewFanRow objects via the rowObject role.
  */
 
 import QtQuick
@@ -16,44 +19,50 @@ Kirigami.ScrollablePage {
     id: overviewPage
     title: i18n("Fan Control")
 
-    // Helper functions to check for presence of specific states
-    function hasFansWithState(stateName) {
-        for (var i = 0; i < fanListModel.rowCount(); i++) {
-            var idx = fanListModel.index(i, 0);
-            if (fanListModel.data(idx, FanListModel.StateRole) === stateName) {
-                return true;
-            }
+    property bool _pageActive: false
+
+    onIsCurrentPageChanged: {
+        if (isCurrentPage) {
+            _pageActive = true
+            statusMonitor.forceStructureRefresh()
+        } else {
+            _pageActive = false
         }
-        return false;
+    }
+
+    function hasFansWithVisualState(stateName) {
+        for (var i = 0; i < overviewModel.rowCount(); i++) {
+            var idx = overviewModel.index(i, 0)
+            var vs = overviewModel.data(idx, OverviewModel.VisualStateRole)
+            if (vs === stateName) return true
+        }
+        return false
     }
 
     ColumnLayout {
         id: mainLayout
         spacing: Kirigami.Units.mediumSpacing
 
-        // -- Severity banners (mutually exclusive in display order: fallback > degraded > disconnected) --
+        // -- Severity banners (use visualState from overview model) --
 
-        // Fallback banner
         Kirigami.InlineMessage {
             id: fallbackBanner
             Layout.fillWidth: true
             type: Kirigami.MessageType.Error
             text: i18n("Fallback active")
-            visible: overviewPage.hasFansWithState("fallback")
+            visible: overviewPage.hasFansWithVisualState("fallback")
             showCloseButton: true
         }
 
-        // Degraded banner
         Kirigami.InlineMessage {
             id: degradedBanner
             Layout.fillWidth: true
             type: Kirigami.MessageType.Warning
             text: i18n("Fan control degraded")
-            visible: !fallbackBanner.visible && overviewPage.hasFansWithState("degraded")
+            visible: !fallbackBanner.visible && overviewPage.hasFansWithVisualState("degraded")
             showCloseButton: true
         }
 
-        // Daemon disconnected banner
         Kirigami.InlineMessage {
             id: disconnectedBanner
             Layout.fillWidth: true
@@ -63,48 +72,59 @@ Kirigami.ScrollablePage {
             showCloseButton: true
         }
 
-        // -- Fan list --
+        // -- Fan list (overview path) --
 
         Kirigami.CardsListView {
             id: fanList
             Layout.fillWidth: true
             Layout.fillHeight: true
-            model: fanListModel
+            model: overviewModel
             implicitHeight: contentHeight
 
             delegate: FanRowDelegate {
                 width: fanList.width
-                fanId: model.fanId
-                displayName: model.displayName
-                supportState: model.supportState
-                controlMode: model.controlMode
-                fanState: model.state
-                temperatureMillidegrees: model.temperatureMillidegrees
-                rpm: model.rpm
-                outputPercent: model.outputPercent
-                hasTach: model.hasTach
-                supportReason: model.supportReason
-                highTempAlert: model.highTempAlert
-                severityOrder: model.severityOrder
+                rowObject: model.rowObject
+
                 onClicked: {
+                    var fanIdStr = rowObject ? rowObject.fanId : ""
+                    if (fanIdStr.length === 0) return
+
+                    // For now, navigate to detail page using fanListModel data
+                    // (detail pages still use the legacy path)
+                    var detailIdx = -1
+                    for (var i = 0; i < fanListModel.rowCount(); i++) {
+                        var idx = fanListModel.index(i, 0)
+                        if (fanListModel.data(idx, FanListModel.FanIdRole) === fanIdStr) {
+                            detailIdx = i
+                            break
+                        }
+                    }
+                    if (detailIdx < 0) return
+
+                    var idx = fanListModel.index(detailIdx, 0)
                     var pageProps = {
-                        "fanId": fanId,
-                        "fanDisplayName": displayName,
-                        "fanSupportState": supportState,
-                        "fanControlMode": controlMode,
-                        "fanState": fanState,
-                        "fanTemperatureMillidegrees": temperatureMillidegrees,
-                        "fanRpm": rpm,
-                        "fanOutputPercent": outputPercent,
-                        "fanHasTach": hasTach,
-                        "fanSupportReason": supportReason,
-                        "fanHighTempAlert": highTempAlert
+                        "fanId": fanIdStr,
+                        "fanDisplayName": fanListModel.data(idx, FanListModel.DisplayNameRole),
+                        "fanSupportState": fanListModel.data(idx, FanListModel.SupportStateRole),
+                        "fanControlMode": fanListModel.data(idx, FanListModel.ControlModeRole),
+                        "fanState": fanListModel.data(idx, FanListModel.StateRole),
+                        "fanTemperatureMillidegrees": fanListModel.data(idx, FanListModel.TemperatureMillidegRole),
+                        "fanRpm": fanListModel.data(idx, FanListModel.RpmRole),
+                        "fanOutputPercent": fanListModel.data(idx, FanListModel.OutputPercentRole),
+                        "fanHasTach": fanListModel.data(idx, FanListModel.HasTachRole),
+                        "fanSupportReason": fanListModel.data(idx, FanListModel.SupportReasonRole),
+                        "fanHighTempAlert": fanListModel.data(idx, FanListModel.HighTempAlertRole),
+                        "fanFriendlyName": fanListModel.data(idx, FanListModel.FriendlyNameRole),
+                        "fanLabel": fanListModel.data(idx, FanListModel.LabelRole)
                     }
                     if (pageStack.currentItem && pageStack.currentItem.toString().indexOf("FanDetailPage") !== -1) {
                         pageStack.replace(Qt.resolvedUrl("FanDetailPage.qml"), pageProps)
                     } else {
                         pageStack.push(Qt.resolvedUrl("FanDetailPage.qml"), pageProps)
                     }
+                }
+                onRenameRequested: function(fId, fFriendlyName, fLabel) {
+                    overviewRenameDialog.openFor("fan", fId, fFriendlyName, fLabel)
                 }
             }
 
@@ -118,7 +138,7 @@ Kirigami.ScrollablePage {
                 explanation: i18n("Select a supported fan, choose its temperature source, then validate and apply the draft to start daemon-managed control.")
             }
 
-            // Empty-state wizard CTA (Plan 04: wizard entry point per D-04)
+            // Empty-state wizard CTA (Plan 04)
             Controls.Button {
                 Layout.alignment: Qt.AlignHCenter
                 Layout.topMargin: Kirigami.Units.mediumSpacing
@@ -144,5 +164,9 @@ Kirigami.ScrollablePage {
             wizardDialog.preselectedFanId = ""
             wizardDialog.open()
         }
+    }
+
+    RenameDialog {
+        id: overviewRenameDialog
     }
 }

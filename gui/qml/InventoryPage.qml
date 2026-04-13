@@ -16,6 +16,11 @@ Kirigami.ScrollablePage {
     id: inventoryPage
     title: i18n("Inventory")
 
+    property string _menuItemType: ""
+    property string _menuItemId: ""
+    property string _menuItemFriendlyName: ""
+    property string _menuItemLabel: ""
+
     ColumnLayout {
         spacing: Kirigami.Units.largeSpacing
         width: inventoryPage.width
@@ -31,6 +36,7 @@ Kirigami.ScrollablePage {
             model: sensorListModel
 
             delegate: Kirigami.AbstractCard {
+                id: sensorCard
                 Layout.fillWidth: true
                 contentItem: RowLayout {
                     spacing: Kirigami.Units.mediumSpacing
@@ -49,6 +55,20 @@ Kirigami.ScrollablePage {
                         subtitle: deviceName
                     }
                 }
+
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    onClicked: function(mouse) {
+                        if (mouse.button === Qt.RightButton) {
+                            inventoryPage._menuItemType = "sensor"
+                            inventoryPage._menuItemId = model.sensorId
+                            inventoryPage._menuItemFriendlyName = model.friendlyName
+                            inventoryPage._menuItemLabel = model.label
+                            contextMenu.popup(sensorCard, mouse.x, mouse.y)
+                        }
+                    }
+                }
             }
         }
 
@@ -63,6 +83,7 @@ Kirigami.ScrollablePage {
             model: fanListModel
 
             delegate: Kirigami.AbstractCard {
+                id: fanCard
                 Layout.fillWidth: true
                 contentItem: RowLayout {
                     spacing: Kirigami.Units.mediumSpacing
@@ -103,7 +124,40 @@ Kirigami.ScrollablePage {
                         }
                     }
                 }
+
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    onClicked: function(mouse) {
+                        if (mouse.button === Qt.RightButton) {
+                            inventoryPage._menuItemType = "fan"
+                            inventoryPage._menuItemId = model.fanId
+                            inventoryPage._menuItemFriendlyName = model.friendlyName
+                            inventoryPage._menuItemLabel = model.label
+                            contextMenu.popup(fanCard, mouse.x, mouse.y)
+                        }
+                    }
+                }
             }
         }
+    }
+
+    Controls.Menu {
+        id: contextMenu
+
+        Controls.MenuItem {
+            text: i18n("Rename")
+            icon.name: "edit-rename"
+            onTriggered: renameDialog.openFor(
+                inventoryPage._menuItemType,
+                inventoryPage._menuItemId,
+                inventoryPage._menuItemFriendlyName,
+                inventoryPage._menuItemLabel
+            )
+        }
+    }
+
+    RenameDialog {
+        id: renameDialog
     }
 }

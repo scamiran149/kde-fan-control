@@ -20,9 +20,9 @@ Rectangle {
 
     function countByState(stateName) {
         var count = 0
-        for (var i = 0; i < fanListModel.rowCount(); i++) {
-            var idx = fanListModel.index(i, 0)
-            if (fanListModel.data(idx, FanListModel.StateRole) === stateName) {
+        for (var i = 0; i < overviewModel.rowCount(); i++) {
+            var idx = overviewModel.index(i, 0)
+            if (overviewModel.data(idx, OverviewModel.VisualStateRole) === stateName) {
                 count++
             }
         }
@@ -31,11 +31,10 @@ Rectangle {
 
     function countHighTempAlerts() {
         var count = 0
-        for (var i = 0; i < fanListModel.rowCount(); i++) {
-            var idx = fanListModel.index(i, 0)
-            var state = fanListModel.data(idx, FanListModel.StateRole)
-            var ht = fanListModel.data(idx, FanListModel.HighTempAlertRole)
-            if (state === "managed" && ht) {
+        for (var i = 0; i < overviewModel.rowCount(); i++) {
+            var idx = overviewModel.index(i, 0)
+            var row = overviewModel.data(idx, OverviewModel.RowObjectRole)
+            if (row && row.visualState === "managed" && row.highTempAlert) {
                 count++
             }
         }
@@ -216,23 +215,22 @@ Rectangle {
             spacing: 0
 
             // Filter model to only show managed fans by default per D-09
-            model: fanListModel
+            model: overviewModel
             delegate: FanTrayDelegate {
                 width: fanListView.width
-                fanId: model.fanId
-                displayName: model.displayName
-                fanState: model.state
-                temperatureMillidegrees: model.temperatureMillidegrees
-                outputPercent: model.outputPercent
-                rpm: model.rpm
-                hasTach: model.hasTach
-                highTempAlert: model.highTempAlert
+                fanId: rowObject ? rowObject.fanId : ""
+                displayName: rowObject ? rowObject.displayName : ""
+                fanState: rowObject ? rowObject.visualState : "unmanaged"
+                temperatureMillidegrees: rowObject ? rowObject.temperatureMillidegrees : 0
+                outputPercent: rowObject ? rowObject.outputPercent : 0.0
+                rpm: rowObject ? rowObject.rpm : 0
+                hasTach: rowObject ? rowObject.hasTach : false
+                highTempAlert: rowObject ? rowObject.highTempAlert : false
 
-                // Only show managed fans per D-09
-                visible: model.state === "managed" ||
-                         model.state === "degraded" ||
-                         model.state === "fallback" ||
-                         model.state === "unmanaged" // show unmanaged too for quick inspection
+                visible: fanState === "managed" ||
+                         fanState === "degraded" ||
+                         fanState === "fallback" ||
+                         fanState === "unmanaged"
                 height: visible ? trayPopover.rowHeight : 0
 
                 // Click opens main window and navigates to this fan's detail

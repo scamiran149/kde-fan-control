@@ -286,11 +286,20 @@ RUST_LOG=kde_fan_control=debug cargo run -p kde-fan-control-daemon -- --session-
 
 ### Known Technical Debt
 
-- `StatusMonitor` uses 250ms polling instead of reactive DBus signal subscriptions (Qt6 `QDBusConnection::connect()` lacks lambda support)
 - KF6 dev packages need proper CMake `find_package` support in some distros
 - Tray/popover navigation stubs not fully wired
 - `FanDetailPage` advanced tab values are hardcoded (not wired to `DraftModel`)
 - Lifecycle events refresh only on page load
+- `OverviewModel::applyStructure()` still uses `beginResetModel()` (acceptable for rare structural refreshes, not yet optimized with `beginMoveRows`)
+
+### Performance Architecture (Overview)
+
+The overview page uses a dual-path update model:
+- **Telemetry path**: 100ms polling → `OverviewTelemetry` DBus → `OverviewModel::applyTelemetry()` → per-property setters on `OverviewFanRow` objects (no model-level `dataChanged`)
+- **Structural path**: 2000ms cooldown-gated → `OverviewStructure` DBus → `OverviewModel::applyStructure()` → row membership/order/display names
+- **Force-refresh triggers** (bypass cooldown): daemon reconnect, write mutations, page visibility changes
+- `TrayIcon` and `NotificationHandler` read from `OverviewModel` (not `FanListModel`) and only react to structural changes
+- `FanListModel` legacy path (250ms coalesced 5-call merge) remains active for detail/inventory/wizard pages
 
 <!-- GSD:profile-start -->
 ## Developer Profile

@@ -10,6 +10,19 @@ pub struct InventorySnapshot {
     pub devices: Vec<HwmonDevice>,
 }
 
+impl InventorySnapshot {
+    pub fn update_fan_rpm(&mut self, fan_id: &str, rpm: Option<u64>) {
+        for device in &mut self.devices {
+            for fan in &mut device.fans {
+                if fan.id == fan_id && fan.rpm_feedback {
+                    fan.current_rpm = rpm;
+                    return;
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HwmonDevice {
     pub id: String,

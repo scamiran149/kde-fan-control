@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::RwLock as StdRwLock;
 use std::time::Duration;
 use std::time::Instant;
@@ -17,9 +18,10 @@ use kde_fan_control_core::control::{
 };
 use kde_fan_control_core::inventory::{ControlMode, InventorySnapshot, discover, discover_from};
 use kde_fan_control_core::lifecycle::{
-    ControlRuntimeSnapshot, FallbackResult, OwnedFanSet, RuntimeState,
+    ControlRuntimeSnapshot, FanRuntimeStatus, FallbackResult, OwnedFanSet, RuntimeState,
     lifecycle_event_from_fallback_incident, perform_boot_reconciliation, write_fallback_for_owned,
 };
+use kde_fan_control_core::overview::{OverviewStructureSnapshot, OverviewTelemetryBatch};
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use tokio::signal::unix::{SignalKind, signal};
@@ -48,6 +50,10 @@ struct ControlSupervisorInner {
     degraded: Arc<RwLock<DegradedState>>,
     tasks: RwLock<HashMap<String, ControlTaskHandle>>,
     status: RwLock<HashMap<String, ControlRuntimeSnapshot>>,
+    fan_locals: RwLock<HashMap<String, Arc<StdMutex<ControlRuntimeSnapshot>>>>,
+    rpm_locals: RwLock<HashMap<String, Arc<StdMutex<Option<u64>>>>>,
+    stale_fan_counters: RwLock<HashMap<String, u32>>,
+    publish_task: RwLock<Option<JoinHandle<()>>>,
     auto_tune: RwLock<HashMap<String, AutoTuneExecutionState>>,
     tuning: RwLock<DaemonTuningSettings>,
     signal_connection: RwLock<Option<zbus::Connection>>,
@@ -122,6 +128,8 @@ enum AutoTuneResultView {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct DraftFanControlProfilePayload {
     #[serde(default)]
+    temp_sources: Option<Vec<String>>,
+    #[serde(default)]
     target_temp_millidegrees: Option<Option<i64>>,
     #[serde(default)]
     aggregation: Option<Option<AggregationFn>>,
@@ -152,6 +160,10 @@ impl ControlSupervisor {
                 degraded,
                 tasks: RwLock::new(HashMap::new()),
                 status: RwLock::new(HashMap::new()),
+                fan_locals: RwLock::new(HashMap::new()),
+                rpm_locals: RwLock::new(HashMap::new()),
+                stale_fan_counters: RwLock::new(HashMap::new()),
+                publish_task: RwLock::new(None),
                 auto_tune: RwLock::new(HashMap::new()),
                 tuning: RwLock::new(DaemonTuningSettings::default()),
                 signal_connection: RwLock::new(None),
@@ -187,6 +199,15 @@ impl ControlSupervisor {
         for (_, task) in tasks.drain() {
             task.handle.abort();
         }
+        drop(tasks);
+
+        if let Some(handle) = self.inner.publish_task.write().await.take() {
+            handle.abort();
+        }
+
+        self.inner.fan_locals.write().await.clear();
+        self.inner.rpm_locals.write().await.clear();
+        self.inner.stale_fan_counters.write().await.clear();
         self.inner.status.write().await.clear();
     }
 
@@ -208,20 +229,46 @@ impl ControlSupervisor {
                 .unwrap_or_default()
         };
 
+        let publish_cadence_ms = desired
+            .first()
+            .map(|(_, e)| e.cadence.control_interval_ms.max(100))
+            .unwrap_or(250);
+
         self.stop_all().await;
 
         for (fan_id, entry) in desired {
             self.inner.degraded.write().await.clear_fan(&fan_id);
+
+            let initial = control_snapshot_from_applied(&entry);
             self.inner
                 .status
                 .write()
                 .await
-                .insert(fan_id.clone(), control_snapshot_from_applied(&entry));
+                .insert(fan_id.clone(), initial.clone());
+
+            let local: Arc<StdMutex<ControlRuntimeSnapshot>> =
+                Arc::new(StdMutex::new(initial));
+            self.inner
+                .fan_locals
+                .write()
+                .await
+                .insert(fan_id.clone(), Arc::clone(&local));
+
+            let rpm_local: Arc<StdMutex<Option<u64>>> = Arc::new(StdMutex::new(None));
+            self.inner
+                .rpm_locals
+                .write()
+                .await
+                .insert(fan_id.clone(), Arc::clone(&rpm_local));
 
             let supervisor = self.clone();
             let fan_id_for_task = fan_id.clone();
+            let local_for_task = Arc::clone(&local);
+            let rpm_local_for_task = Arc::clone(&rpm_local);
             let handle = tokio::spawn(async move {
-                supervisor.run_fan_loop(fan_id_for_task, entry).await;
+                supervisor
+                    .run_fan_loop(fan_id_for_task, entry, local_for_task, rpm_local_for_task)
+                    .await;
             });
 
             self.inner
@@ -230,11 +277,150 @@ impl ControlSupervisor {
                 .await
                 .insert(fan_id, ControlTaskHandle { handle });
         }
+
+        let supervisor = self.clone();
+        let publish_handle = tokio::spawn(async move {
+            supervisor.run_publish_loop(publish_cadence_ms).await;
+        });
+        *self.inner.publish_task.write().await = Some(publish_handle);
     }
 
     async fn status_json(&self) -> Result<String, serde_json::Error> {
         let status = self.inner.status.read().await;
         serde_json::to_string(&*status)
+    }
+
+    async fn runtime_state_snapshot(&self, fallback_fan_ids: &HashSet<String>) -> RuntimeState {
+        let (owned_guard, applied_guard, snapshot_guard, degraded_guard, live_status) = {
+            let owned = self.inner.owned.read().await;
+            let config = self.inner.config.read().await;
+            let snapshot = self.inner.snapshot.read().await;
+            let degraded = self.inner.degraded.read().await;
+            let status = self.inner.status.read().await;
+            (
+                owned.clone(),
+                config.applied.clone(),
+                snapshot.clone(),
+                degraded.clone(),
+                status.clone(),
+            )
+        };
+
+        let mut state = RuntimeState::build(
+            &owned_guard,
+            applied_guard.as_ref(),
+            &degraded_guard,
+            fallback_fan_ids,
+            &snapshot_guard,
+        );
+
+        for (fan_id, control) in live_status {
+            if let Some(FanRuntimeStatus::Managed { control: existing, .. }) =
+                state.fan_statuses.get_mut(&fan_id)
+            {
+                *existing = control;
+            }
+        }
+
+        state
+    }
+
+    fn write_fan_local(
+        local: &Arc<StdMutex<ControlRuntimeSnapshot>>,
+        update: impl FnOnce(&mut ControlRuntimeSnapshot),
+    ) {
+        if let Ok(mut guard) = local.lock() {
+            update(&mut guard);
+        }
+    }
+
+    async fn publish_status_batch(&self) {
+        let locals = self.inner.fan_locals.read().await;
+        {
+            let mut status = self.inner.status.write().await;
+            for (fan_id, local) in locals.iter() {
+                if let Ok(guard) = local.lock() {
+                    if let Some(entry) = status.get_mut(fan_id) {
+                        *entry = guard.clone();
+                    }
+                }
+            }
+        }
+        drop(locals);
+
+        let rpm_locals = self.inner.rpm_locals.read().await;
+        {
+            let mut snapshot = self.inner.snapshot.write().await;
+            for (fan_id, rpm_local) in rpm_locals.iter() {
+                if let Ok(guard) = rpm_local.lock() {
+                    snapshot.update_fan_rpm(fan_id, *guard);
+                }
+            }
+        }
+    }
+
+    const STALE_THRESHOLD: u32 = 100;
+
+    async fn run_publish_loop(&self, cadence_ms: u64) {
+        let mut tick = interval(Duration::from_millis(cadence_ms));
+        tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            self.publish_status_batch().await;
+            self.check_stale_fans().await;
+        }
+    }
+
+    async fn check_stale_fans(&self) {
+        let locals = self.inner.fan_locals.read().await;
+        let mut stale_counters = self.inner.stale_fan_counters.write().await;
+        let mut to_degrade = Vec::new();
+
+        for (fan_id, local) in locals.iter() {
+            let is_stale = if let Ok(guard) = local.lock() {
+                guard.aggregated_temp_millidegrees.unwrap_or(0) == 0
+            } else {
+                true
+            };
+
+            if is_stale {
+                let count = stale_counters.entry(fan_id.clone()).or_insert(0);
+                *count += 1;
+                if *count == Self::STALE_THRESHOLD / 2 {
+                    tracing::warn!(
+                        fan_id = %fan_id,
+                        stale_ticks = *count,
+                        "managed fan has produced no valid sensor data for an extended period"
+                    );
+                }
+                if *count >= Self::STALE_THRESHOLD {
+                    to_degrade.push(fan_id.clone());
+                }
+            } else {
+                stale_counters.insert(fan_id.clone(), 0);
+            }
+        }
+
+        drop(stale_counters);
+        drop(locals);
+
+        for fan_id in to_degrade {
+            tracing::error!(
+                fan_id = %fan_id,
+                "auto-degrading managed fan: no valid sensor data for extended period"
+            );
+            self.degrade_and_stop(
+                &fan_id,
+                DegradedReason::StaleSensorData {
+                    fan_id: fan_id.clone(),
+                },
+            )
+            .await;
+
+            self.inner.fan_locals.write().await.remove(&fan_id);
+            self.inner.rpm_locals.write().await.remove(&fan_id);
+            self.inner.stale_fan_counters.write().await.remove(&fan_id);
+        }
     }
 
     async fn start_auto_tune(&self, fan_id: &str) -> fdo::Result<()> {
@@ -290,11 +476,25 @@ impl ControlSupervisor {
                 samples: Vec::new(),
             },
         );
-        self.update_status(fan_id, |status| {
-            status.auto_tuning = true;
-            status.logical_output_percent = Some(100.0);
-        })
-        .await;
+
+        let locals = self.inner.fan_locals.read().await;
+        if let Some(local) = locals.get(fan_id) {
+            Self::write_fan_local(local, |status| {
+                status.auto_tuning = true;
+                status.logical_output_percent = Some(100.0);
+            });
+        }
+
+        let snapshot_to_publish = locals.get(fan_id).and_then(|local| {
+            local.lock().ok().map(|guard| guard.clone())
+        });
+        drop(locals);
+
+        if let Some(snapshot) = snapshot_to_publish {
+            if let Some(entry) = self.inner.status.write().await.get_mut(fan_id) {
+                *entry = snapshot;
+            }
+        }
 
         Ok(())
     }
@@ -392,14 +592,17 @@ impl ControlSupervisor {
             );
         }
 
-        self.update_status(fan_id, |status| {
-            status.auto_tuning = is_running;
-        })
-        .await;
+        let locals = self.inner.fan_locals.read().await;
+        if let Some(local) = locals.get(fan_id) {
+            Self::write_fan_local(local, |status| {
+                status.auto_tuning = is_running;
+            });
+        }
 
         if should_emit {
-            self.update_status(fan_id, |status| status.auto_tuning = false)
-                .await;
+            if let Some(local) = locals.get(fan_id) {
+                Self::write_fan_local(local, |status| status.auto_tuning = false);
+            }
             if let Some(connection) = self.inner.signal_connection.read().await.clone() {
                 emit_auto_tune_completed(&connection, fan_id).await;
             }
@@ -420,8 +623,10 @@ impl ControlSupervisor {
                 error,
             },
         );
-        self.update_status(fan_id, |status| status.auto_tuning = false)
-            .await;
+        let locals = self.inner.fan_locals.read().await;
+        if let Some(local) = locals.get(fan_id) {
+            Self::write_fan_local(local, |status| status.auto_tuning = false);
+        }
     }
 
     async fn accepted_auto_tune_proposal(&self, fan_id: &str) -> fdo::Result<AutoTuneProposal> {
@@ -439,13 +644,29 @@ impl ControlSupervisor {
         }
     }
 
-    async fn run_fan_loop(&self, fan_id: String, entry: AppliedFanEntry) {
+    async fn run_fan_loop(
+        &self,
+        fan_id: String,
+        entry: AppliedFanEntry,
+        local: Arc<StdMutex<ControlRuntimeSnapshot>>,
+        rpm_local: Arc<StdMutex<Option<u64>>>,
+    ) {
         let pwm_path = match self.inner.owned.read().await.sysfs_path(&fan_id) {
             Some(path) => path.to_string(),
             None => {
                 self.clear_status(&fan_id).await;
                 return;
             }
+        };
+
+        let rpm_path = {
+            let snapshot = self.inner.snapshot.read().await;
+            resolve_fan_rpm_path(&snapshot, &fan_id)
+        };
+
+        let resolved_temp_sources = {
+            let snapshot = self.inner.snapshot.read().await;
+            resolve_temp_sources(&snapshot, &entry.temp_sources)
         };
 
         let mut sample_interval = interval(Duration::from_millis(entry.cadence.sample_interval_ms));
@@ -468,19 +689,26 @@ impl ControlSupervisor {
         let mut last_written_percent = None;
 
         loop {
+            let cached_auto_tuning = self.auto_tune_output_override(&fan_id).await.is_some();
+
             tokio::select! {
                 _ = sample_interval.tick() => {
-                    match self.sample_temperatures(&fan_id, &entry).await {
+                    match Self::sample_temperatures_cached(
+                        &fan_id,
+                        &resolved_temp_sources,
+                        &entry.temp_sources,
+                        &entry.aggregation,
+                    ) {
                         Ok(aggregated_temp) => {
                             latest_aggregated_temp = Some(aggregated_temp);
-                            self.update_status(&fan_id, |status| {
+                            Self::write_fan_local(&local, |status| {
                                 status.aggregated_temp_millidegrees = Some(aggregated_temp);
                                 status.alert_high_temp = aggregated_temp >= status.target_temp_millidegrees + 5_000;
-                            }).await;
+                            });
                             self.record_auto_tune_sample(&fan_id, aggregated_temp).await;
                         }
                         Err(reason) => {
-                            if self.auto_tune_output_override(&fan_id).await.is_some() {
+                            if cached_auto_tuning {
                                 self.fail_auto_tune(&fan_id, reason.to_string()).await;
                                 latest_output_percent = None;
                                 continue;
@@ -499,14 +727,25 @@ impl ControlSupervisor {
                             break;
                         }
                     }
+
+                    if let Some(ref path) = rpm_path {
+                        if let Some(rpm) = fs::read_to_string(path)
+                            .ok()
+                            .and_then(|v| v.trim().parse::<u64>().ok())
+                        {
+                            if let Ok(mut guard) = rpm_local.lock() {
+                                *guard = Some(rpm);
+                            }
+                        }
+                    }
                 }
                 _ = control_interval.tick() => {
-                    if self.auto_tune_output_override(&fan_id).await.is_some() {
+                    if cached_auto_tuning {
                         latest_output_percent = Some(100.0);
-                        self.update_status(&fan_id, |status| {
+                        Self::write_fan_local(&local, |status| {
                             status.logical_output_percent = Some(100.0);
                             status.auto_tuning = true;
-                        }).await;
+                        });
                         continue;
                     }
                     if let Some(aggregated_temp) = latest_aggregated_temp {
@@ -515,12 +754,12 @@ impl ControlSupervisor {
                             entry.cadence.control_interval_ms as f64 / 1_000.0,
                         );
                         latest_output_percent = Some(output.logical_output_percent);
-                        self.update_status(&fan_id, |status| {
+                        Self::write_fan_local(&local, |status| {
                             status.aggregated_temp_millidegrees = Some(aggregated_temp);
                             status.logical_output_percent = Some(output.logical_output_percent);
                             status.last_error_millidegrees = Some(output.error_millidegrees.round() as i64);
                             status.alert_high_temp = aggregated_temp >= status.target_temp_millidegrees + 5_000;
-                        }).await;
+                        });
                     }
                 }
                 _ = write_interval.tick() => {
@@ -529,7 +768,7 @@ impl ControlSupervisor {
                         break;
                     }
 
-                    let Some(output_percent) = self.auto_tune_output_override(&fan_id).await.or(latest_output_percent) else {
+                    let Some(output_percent) = cached_auto_tuning.then_some(100.0).or(latest_output_percent) else {
                         continue;
                     };
 
@@ -552,10 +791,10 @@ impl ControlSupervisor {
                         Ok(()) => {
                             latest_pwm = Some(mapped_pwm);
                             last_written_percent = Some(output_percent);
-                            self.update_status(&fan_id, |status| {
+                            Self::write_fan_local(&local, |status| {
                                 status.logical_output_percent = Some(output_percent);
                                 status.mapped_pwm = Some(mapped_pwm);
-                            }).await;
+                            });
                         }
                         Err(error) => {
                             tracing::error!(fan_id = %fan_id, path = %pwm_path, error = %error, "failed pwm control write; degrading fan control");
@@ -579,44 +818,49 @@ impl ControlSupervisor {
             let snapshot = self.inner.snapshot.read().await;
             resolve_temp_sources(&snapshot, &entry.temp_sources)
         };
+        Self::read_temperature_sources(fan_id, &resolved_sources, &entry.temp_sources, &entry.aggregation)
+    }
 
+    fn sample_temperatures_cached(
+        fan_id: &str,
+        resolved_sources: &[(String, PathBuf)],
+        temp_sources: &[String],
+        aggregation: &AggregationFn,
+    ) -> Result<i64, DegradedReason> {
+        Self::read_temperature_sources(fan_id, resolved_sources, temp_sources, aggregation)
+    }
+
+    fn read_temperature_sources(
+        fan_id: &str,
+        resolved_sources: &[(String, PathBuf)],
+        temp_sources: &[String],
+        aggregation: &AggregationFn,
+    ) -> Result<i64, DegradedReason> {
         let mut readings = Vec::new();
-        let mut first_missing = entry
-            .temp_sources
+        let mut first_missing = temp_sources
             .first()
             .cloned()
             .unwrap_or_else(|| "unknown-temp".to_string());
 
         for (temp_id, path) in resolved_sources {
             first_missing = temp_id.clone();
-            match fs::read_to_string(&path)
+            match fs::read_to_string(path)
                 .ok()
                 .and_then(|value| value.trim().parse::<i64>().ok())
             {
                 Some(reading) => readings.push(reading),
                 None => {
-                    tracing::warn!(fan_id = %fan_id, temp_id = %temp_id, path = %path.display(), "failed to read live temperature input");
+                    tracing::warn!(fan_id = %fan_id, temp_id = %temp_id, "failed to read live temperature input");
                 }
             }
         }
 
-        entry
-            .aggregation
+        aggregation
             .compute_millidegrees(&readings)
             .ok_or_else(|| DegradedReason::TempSourceMissing {
                 fan_id: fan_id.to_string(),
                 temp_id: first_missing,
             })
-    }
-
-    async fn update_status<F>(&self, fan_id: &str, update: F)
-    where
-        F: FnOnce(&mut ControlRuntimeSnapshot),
-    {
-        let mut status = self.inner.status.write().await;
-        if let Some(snapshot) = status.get_mut(fan_id) {
-            update(snapshot);
-        }
     }
 
     async fn clear_status(&self, fan_id: &str) {
@@ -744,6 +988,18 @@ fn resolve_temp_sources(
             })
         })
         .collect()
+}
+
+fn resolve_fan_rpm_path(snapshot: &InventorySnapshot, fan_id: &str) -> Option<PathBuf> {
+    snapshot.devices.iter().find_map(|device| {
+        device
+            .fans
+            .iter()
+            .find(|fan| fan.id == fan_id && fan.rpm_feedback)
+            .map(|fan| {
+                PathBuf::from(&device.sysfs_path).join(format!("fan{}_input", fan.channel))
+            })
+    })
 }
 
 fn write_pwm_value(pwm_path: &str, pwm_value: u16) -> std::io::Result<()> {
@@ -1091,6 +1347,9 @@ impl ControlIface {
                 .or_insert_with(|| draft_entry_from_applied(&applied_entry))
         };
 
+        if let Some(value) = patch.temp_sources {
+            draft_entry.temp_sources = value;
+        }
         if let Some(value) = patch.target_temp_millidegrees {
             draft_entry.target_temp_millidegrees = value;
         }
@@ -1243,29 +1502,8 @@ impl LifecycleIface {
     /// Return the current runtime state as a JSON string.
     /// Shows which fans are managed, degraded, in fallback, or unmanaged.
     async fn get_runtime_state(&self) -> fdo::Result<String> {
-        let (owned_guard, config_guard, snapshot_guard, degraded_guard, fallback_guard) = {
-            let owned = self.owned.read().await;
-            let config = self.config.read().await;
-            let snapshot = self.snapshot.read().await;
-            let degraded = self.degraded.read().await;
-            let fallback_fan_ids = self.fallback_fan_ids.read().await;
-            (
-                owned.clone(),
-                config.applied.clone(),
-                snapshot.clone(),
-                degraded.clone(),
-                fallback_fan_ids.clone(),
-            )
-            // All guards dropped here
-        };
-
-        let state = RuntimeState::build(
-            &owned_guard,
-            config_guard.as_ref(),
-            &degraded_guard,
-            &fallback_guard,
-            &snapshot_guard,
-        );
+        let fallback_guard = self.fallback_fan_ids.read().await.clone();
+        let state = self.control.runtime_state_snapshot(&fallback_guard).await;
 
         serde_json::to_string(&state)
             .map_err(|e| fdo::Error::Failed(format!("runtime state serialization error: {e}")))
@@ -1399,13 +1637,13 @@ impl LifecycleIface {
         require_authorized(connection, &header).await?;
 
         let (applied, result) = {
-            let (draft, snapshot) = {
+            let (draft, snapshot, previous_applied) = {
                 let config = self.config.read().await;
                 let snapshot = self.snapshot.read().await;
-                (config.draft.clone(), snapshot.clone())
+                (config.draft.clone(), snapshot.clone(), config.applied.clone())
             };
             let timestamp = format_iso8601_now();
-            apply_draft(&draft, &snapshot, timestamp)
+            apply_draft(&draft, &snapshot, timestamp, previous_applied.as_ref())
         };
 
         let mut had_rejections = !result.rejected.is_empty();
@@ -1546,6 +1784,37 @@ impl LifecycleIface {
 
         serde_json::to_string(&result)
             .map_err(|e| fdo::Error::Failed(format!("validation serialization error: {e}")))
+    }
+
+    // -------------------------------------------------------------------
+    // Signals
+    // -------------------------------------------------------------------
+    // Overview-specific read methods (split structure + telemetry)
+
+    /// Return the overview structure snapshot as JSON.
+    async fn get_overview_structure(&self) -> fdo::Result<String> {
+        let (snapshot_guard, config_guard) = {
+            let snapshot = self.snapshot.read().await;
+            let config = self.config.read().await;
+            (snapshot.clone(), config.clone())
+        };
+        let fallback_guard = self.fallback_fan_ids.read().await.clone();
+
+        let runtime = self.control.runtime_state_snapshot(&fallback_guard).await;
+
+        let structure = OverviewStructureSnapshot::build(&snapshot_guard, &runtime, &config_guard);
+        serde_json::to_string(&structure)
+            .map_err(|e| fdo::Error::Failed(format!("overview structure serialization error: {e}")))
+    }
+
+    async fn get_overview_telemetry(&self) -> fdo::Result<String> {
+        let snapshot_guard = self.snapshot.read().await.clone();
+        let fallback_guard = self.fallback_fan_ids.read().await.clone();
+        let runtime = self.control.runtime_state_snapshot(&fallback_guard).await;
+
+        let telemetry = OverviewTelemetryBatch::build(&snapshot_guard, &runtime);
+        serde_json::to_string(&telemetry)
+            .map_err(|e| fdo::Error::Failed(format!("overview telemetry serialization error: {e}")))
     }
 
     // -------------------------------------------------------------------
@@ -2063,6 +2332,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "D-Bus inventory and lifecycle surfaces ready"
     );
 
+    let rpm_snapshot = Arc::clone(&snapshot);
+    tokio::spawn(async move {
+        let mut tick = interval(Duration::from_secs(2));
+        tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            let paths = {
+                let snapshot = rpm_snapshot.read().await;
+                snapshot
+                    .devices
+                    .iter()
+                    .flat_map(|device| {
+                        device
+                            .fans
+                            .iter()
+                            .filter(|fan| fan.rpm_feedback)
+                            .map(|fan| {
+                                (
+                                    fan.id.clone(),
+                                    PathBuf::from(&device.sysfs_path)
+                                        .join(format!("fan{}_input", fan.channel)),
+                                )
+                            })
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let updates: Vec<(String, u64)> = paths
+                .iter()
+                .filter_map(|(fan_id, path)| {
+                    fs::read_to_string(path)
+                        .ok()
+                        .and_then(|v| v.trim().parse::<u64>().ok())
+                        .map(|rpm| (fan_id.clone(), rpm))
+                })
+                .collect();
+            if !updates.is_empty() {
+                let mut snapshot = rpm_snapshot.write().await;
+                for (fan_id, rpm) in updates {
+                    snapshot.update_fan_rpm(&fan_id, Some(rpm));
+                }
+            }
+        }
+    });
+
     // Wait for shutdown signal, stop control loops, then drive fallback for
     // any remaining owned fans.
     wait_for_shutdown_signal().await?;
@@ -2124,7 +2437,7 @@ mod tests {
             target_temp_millidegrees: 50_000,
             aggregation: AggregationFn::Average,
             pid_gains: PidGains {
-                kp: 0.01,
+                kp: 1.0,
                 ki: 0.0,
                 kd: 0.0,
             },

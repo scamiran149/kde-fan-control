@@ -1,10 +1,13 @@
 /*
- * KDE Fan Control — Fan Row Delegate
+ * KDE Fan Control — Overview Fan Row Delegate
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Compact delegate for each fan entry in the overview list.
- * Shows: display name, state badge, temperature, RPM, output bar, support reason.
+ * High-performance overview row bound directly to an OverviewFanRow
+ * object property for surgical per-property QML updates.
+ *
+ * Layout is locked: fixed widths for rapidly changing numeric fields,
+ * monospace font, no auto-sizing for hot content.
  */
 
 import QtQuick
@@ -16,86 +19,79 @@ import org.kde.fancontrol
 Kirigami.AbstractCard {
     id: fanRow
 
-    // Required properties from model
-    property string fanId: ""
-    property string displayName: ""
-    property string supportState: ""
-    property string controlMode: ""
-    property string fanState: ""
-    property int temperatureMillidegrees: 0
-    property int rpm: 0
-    property double outputPercent: 0.0
-    property bool hasTach: false
-    property string supportReason: ""
-    property bool highTempAlert: false
-    property int severityOrder: 0
+    property var rowObject: null
+
+    signal renameRequested(string fanId, string friendlyName, string hardwareLabel)
 
     Layout.minimumHeight: 56
+    Layout.preferredHeight: 56
 
     contentItem: RowLayout {
         spacing: Kirigami.Units.mediumSpacing
 
-        // State badge
         StateBadge {
-            fanState: fanRow.fanState
-            highTempAlert: fanRow.highTempAlert
+            fanState: fanRow.rowObject ? fanRow.rowObject.visualState : "unmanaged"
+            stateTextOverride: fanRow.rowObject ? fanRow.rowObject.stateText : ""
+            stateIconOverride: fanRow.rowObject ? fanRow.rowObject.stateIconName : ""
+            stateColorOverride: fanRow.rowObject ? fanRow.rowObject.stateColor : ""
+            highTempAlert: fanRow.rowObject ? fanRow.rowObject.highTempAlert : false
         }
 
-        // Fan name and support reason
         ColumnLayout {
             Layout.fillWidth: true
+            Layout.minimumWidth: 120
             spacing: 0
 
             Controls.Label {
-                text: fanRow.displayName
+                text: fanRow.rowObject ? fanRow.rowObject.displayName : ""
                 font.weight: Font.DemiBold
                 Layout.fillWidth: true
                 elide: Text.ElideRight
+                maximumLineCount: 1
             }
 
             Controls.Label {
-                text: fanRow.supportReason
-                visible: fanRow.supportReason.length > 0 &&
-                         (fanRow.fanState === "partial" ||
-                          fanRow.fanState === "unavailable" ||
-                          fanRow.fanState === "degraded")
+                text: fanRow.rowObject && fanRow.rowObject.showSupportReason ? fanRow.rowObject.supportReason : ""
+                visible: fanRow.rowObject ? fanRow.rowObject.showSupportReason : false
                 font: Kirigami.Theme.smallFont
                 color: Kirigami.Theme.disabledTextColor
                 Layout.fillWidth: true
                 elide: Text.ElideRight
+                maximumLineCount: 1
             }
         }
 
-        // Temperature display
         TemperatureDisplay {
-            millidegrees: fanRow.temperatureMillidegrees
+            millidegrees: fanRow.rowObject ? fanRow.rowObject.temperatureMillidegrees : 0
             showUnit: true
-            showNoSource: fanRow.fanState === "unmanaged" ||
-                          fanRow.fanState === "unavailable" ||
-                          fanRow.fanState === "partial"
+            showNoSource: fanRow.rowObject ?
+                          (fanRow.rowObject.visualState === "unmanaged" ||
+                           fanRow.rowObject.visualState === "unavailable" ||
+                           fanRow.rowObject.visualState === "partial") : true
+            fixedWidth: true
         }
 
-        // RPM
         Controls.Label {
-            text: fanRow.hasTach ?
-                  (fanRow.rpm > 0 ? fanRow.rpm + " RPM" : "0 RPM") :
-                  i18n("No RPM feedback")
-            font: Kirigami.Theme.smallFont
+            text: fanRow.rowObject ? fanRow.rowObject.rpmText : ""
+            visible: fanRow.rowObject ? fanRow.rowObject.showRpm : false
+            font.family: "monospace"
+            font.pixelSize: Kirigami.Theme.smallFont.pixelSize
             color: Kirigami.Theme.disabledTextColor
-            visible: fanRow.fanState === "managed" ||
-                     fanRow.fanState === "degraded" ||
-                     fanRow.fanState === "fallback"
+            Layout.minimumWidth: 64
+            Layout.preferredWidth: 64
+            horizontalAlignment: Text.AlignRight
         }
 
-        // Output bar
         OutputBar {
-            percent: fanRow.outputPercent
-            active: fanRow.fanState === "managed" ||
-                     fanRow.fanState === "degraded" ||
-                     fanRow.fanState === "fallback"
+            percent: fanRow.rowObject ? fanRow.rowObject.outputPercent : 0.0
+            active: fanRow.rowObject ?
+                    (fanRow.rowObject.visualState === "managed" ||
+                     fanRow.rowObject.visualState === "degraded" ||
+                     fanRow.rowObject.visualState === "fallback") : false
+            outputTextOverride: fanRow.rowObject ? fanRow.rowObject.outputText : ""
+            fixedWidth: true
         }
 
-        // Chevron to open fan detail
         Kirigami.Icon {
             source: "go-next-symbolic"
             Layout.preferredWidth: Kirigami.Units.iconSizes.small
@@ -107,6 +103,17 @@ Kirigami.AbstractCard {
 
     MouseArea {
         anchors.fill: parent
-        onClicked: fanRow.clicked()
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        onClicked: function(mouse) {
+            if (mouse.button === Qt.RightButton) {
+                fanRow.renameRequested(
+                    fanRow.rowObject ? fanRow.rowObject.fanId : "",
+                    fanRow.rowObject ? fanRow.rowObject.friendlyName : "",
+                    fanRow.rowObject ? fanRow.rowObject.hardwareLabel : ""
+                )
+            } else {
+                fanRow.clicked()
+            }
+        }
     }
 }

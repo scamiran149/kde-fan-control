@@ -5,6 +5,10 @@
  *
  * QAbstractListModel for the sensor inventory listing.
  * Parses InventorySnapshot JSON from the daemon.
+ *
+ * Uses diff-based updates: value-only changes emit dataChanged()
+ * so QML delegates update in-place. Structural changes
+ * (sensor added/removed) fall back to beginResetModel/endResetModel.
  */
 
 #ifndef SENSOR_LIST_MODEL_H
@@ -23,6 +27,8 @@ public:
     enum Roles {
         SensorIdRole = Qt::UserRole + 1,
         DisplayNameRole,
+        FriendlyNameRole,
+        LabelRole,
         TemperatureMillidegRole,
         DeviceNameRole,
         SourcePathRole,
@@ -39,6 +45,7 @@ public:
 
 private:
     QList<SensorInfo *> m_sensors;
+    bool m_initialized = false;
 };
 
 #endif // SENSOR_LIST_MODEL_H

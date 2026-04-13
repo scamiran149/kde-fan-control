@@ -28,6 +28,8 @@ Kirigami.Page {
     property bool fanHasTach: false
     property string fanSupportReason: ""
     property bool fanHighTempAlert: false
+    property string fanFriendlyName: ""
+    property string fanLabel: ""
     property bool validationAttempted: false
     property bool applySucceeded: false
 
@@ -38,6 +40,14 @@ Kirigami.Page {
             text: i18n("Back")
             icon.name: "go-previous"
             onTriggered: pageStack.pop()
+        },
+        Kirigami.Action {
+            text: i18n("Rename")
+            icon.name: "edit-rename"
+            enabled: statusMonitor.daemonConnected && daemonInterface.canWrite
+            onTriggered: {
+                fanDetailRenameDialog.openFor("fan", fanDetailPage.fanId, fanDetailPage.fanFriendlyName, fanDetailPage.fanLabel)
+            }
         },
         Kirigami.Action {
             text: i18n("Wizard configuration")
@@ -106,6 +116,8 @@ Kirigami.Page {
         }
 
         fanDisplayName = snapshot.displayName
+        fanFriendlyName = snapshot.friendlyName
+        fanLabel = snapshot.label
         fanSupportState = snapshot.supportState
         fanControlMode = snapshot.controlMode
         fanState = snapshot.state
@@ -838,5 +850,9 @@ Kirigami.Page {
                 daemonInterface.lifecycleEvents()
             })
         }
+    }
+
+    RenameDialog {
+        id: fanDetailRenameDialog
     }
 }

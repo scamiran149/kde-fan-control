@@ -495,13 +495,13 @@ impl std::fmt::Display for ValidationError {
 }
 
 fn validate_cadence(fan_id: &str, cadence: ControlCadence) -> Result<(), ValidationError> {
-    if cadence.sample_interval_ms < 250
-        || cadence.control_interval_ms < 250
-        || cadence.write_interval_ms < 250
+    if cadence.sample_interval_ms < 100
+        || cadence.control_interval_ms < 100
+        || cadence.write_interval_ms < 100
     {
         return Err(ValidationError::InvalidCadence {
             fan_id: fan_id.to_string(),
-            reason: "sample, control, and write cadences must each be at least 250ms".to_string(),
+            reason: "sample, control, and write cadences must each be at least 100ms".to_string(),
         });
     }
 
@@ -747,10 +747,11 @@ pub fn apply_draft(
     draft: &DraftConfig,
     snapshot: &InventorySnapshot,
     applied_at: String,
+    previous_applied: Option<&AppliedConfig>,
 ) -> (AppliedConfig, ValidationResult) {
     let result = validate_draft(draft, snapshot);
 
-    let fans = result
+    let mut fans = result
         .enrollable
         .iter()
         .filter_map(|fan_id| {
@@ -771,7 +772,17 @@ pub fn apply_draft(
                 },
             ))
         })
-        .collect();
+        .collect::<HashMap<_, _>>();
+
+    // Preserve fans from the previous applied config that are not in the draft.
+    // This ensures that enrolling a new fan does not drop existing managed fans.
+    if let Some(prev) = previous_applied {
+        for (fan_id, entry) in &prev.fans {
+            if !fans.contains_key(fan_id) && !draft.fans.contains_key(fan_id) {
+                fans.insert(fan_id.clone(), entry.clone());
+            }
+        }
+    }
 
     let applied = AppliedConfig {
         fans,
@@ -822,6 +833,9 @@ pub enum DegradedReason {
 
     /// The daemon entered fallback mode — previously controlled fans set to max.
     FallbackActive { affected_fans: Vec<String> },
+
+    /// A managed fan produced no valid sensor data for an extended period.
+    StaleSensorData { fan_id: String },
 }
 
 impl std::fmt::Display for DegradedReason {
@@ -869,6 +883,12 @@ impl std::fmt::Display for DegradedReason {
             }
             Self::FallbackActive { affected_fans } => {
                 write!(f, "fallback active for fans: {}", affected_fans.join(", "))
+            }
+            Self::StaleSensorData { fan_id } => {
+                write!(
+                    f,
+                    "fan '{fan_id}' produced no valid sensor data for an extended period"
+                )
             }
         }
     }
@@ -1259,7 +1279,8 @@ mod tests {
             .fans
             .insert("ghost-fan".to_string(), managed_draft_entry());
 
-        let (applied, result) = apply_draft(&draft, &snapshot, "2026-04-11T12:00:00Z".to_string());
+        let (applied, result) =
+            apply_draft(&draft, &snapshot, "2026-04-11T12:00:00Z".to_string(), None);
 
         // Only the valid fan should appear in applied.
         assert!(applied
@@ -1345,7 +1366,8 @@ mod tests {
             },
         );
 
-        let (applied, result) = apply_draft(&draft, &snapshot, "2026-04-11T12:00:00Z".to_string());
+        let (applied, result) =
+            apply_draft(&draft, &snapshot, "2026-04-11T12:00:00Z".to_string(), None);
         assert!(result.all_passed());
 
         let entry = applied

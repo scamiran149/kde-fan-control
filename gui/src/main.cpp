@@ -18,6 +18,8 @@
 #include "models/sensor_list_model.h"
 #include "models/draft_model.h"
 #include "models/lifecycle_event_model.h"
+#include "models/overview_model.h"
+#include "models/overview_fan_row.h"
 #include "tray_icon.h"
 #include "notification_handler.h"
 
@@ -35,13 +37,14 @@ int main(int argc, char *argv[])
     // Reactive model updates driven by DBus signals.
     FanListModel fanListModel;
     SensorListModel sensorListModel;
+    OverviewModel overviewModel;
     DraftModel draftModel(&daemonInterface);
     LifecycleEventModel lifecycleEventModel;
-    StatusMonitor statusMonitor(&daemonInterface, &fanListModel, &sensorListModel);
+    StatusMonitor statusMonitor(&daemonInterface, &fanListModel, &sensorListModel, &overviewModel);
 
     // System tray icon and notification handler (Plan 03).
-    TrayIcon trayIcon(&statusMonitor, &fanListModel);
-    NotificationHandler notificationHandler(&statusMonitor, &fanListModel);
+    TrayIcon trayIcon(&statusMonitor, &overviewModel);
+    NotificationHandler notificationHandler(&statusMonitor, &overviewModel);
 
     // Wire up initial data loading: once the status monitor detects
     // the daemon is alive it will trigger the model refreshes.
@@ -57,12 +60,19 @@ int main(int argc, char *argv[])
         "FanListModel", QStringLiteral("Cannot create FanListModel in QML"));
     qmlRegisterUncreatableType<SensorListModel>("org.kde.fancontrol", 1, 0,
         "SensorListModel", QStringLiteral("Cannot create SensorListModel in QML"));
+    qmlRegisterUncreatableType<OverviewModel>("org.kde.fancontrol", 1, 0,
+        "OverviewModel", QStringLiteral("Cannot create OverviewModel in QML"));
+
+    // Register OverviewFanRow so QML can access rowObject properties directly.
+    qmlRegisterUncreatableType<OverviewFanRow>("org.kde.fancontrol", 1, 0,
+        "OverviewFanRow", QStringLiteral("Cannot create OverviewFanRow in QML"));
 
     // Register context properties for QML access.
     engine.rootContext()->setContextProperty(QStringLiteral("daemonInterface"), &daemonInterface);
     engine.rootContext()->setContextProperty(QStringLiteral("statusMonitor"), &statusMonitor);
     engine.rootContext()->setContextProperty(QStringLiteral("fanListModel"), &fanListModel);
     engine.rootContext()->setContextProperty(QStringLiteral("sensorListModel"), &sensorListModel);
+    engine.rootContext()->setContextProperty(QStringLiteral("overviewModel"), &overviewModel);
     engine.rootContext()->setContextProperty(QStringLiteral("draftModel"), &draftModel);
     engine.rootContext()->setContextProperty(QStringLiteral("lifecycleEventModel"), &lifecycleEventModel);
     engine.rootContext()->setContextProperty(QStringLiteral("trayIcon"), &trayIcon);

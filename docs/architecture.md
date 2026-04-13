@@ -286,11 +286,13 @@ daemon's internals — the DBus contract is the stable API.
   │                                                 │
   │  ┌──────────┐ ┌───────────┐ ┌───────────────┐ │
   │  │ Overview  │ │ Inventory │ │  FanDetail    │ │
-  │  │  Page     │ │   Page   │ │  Page (tabs)  │ │
+  │  │  Page    │ │   Page   │ │  Page (tabs)  │ │
+  │  │ (fast    │ │ (legacy   │ │ (legacy       │ │
+  │  │  path)   │ │  path)   │ │  path)        │ │
   │  └──────────┘ └───────────┘ └───────────────┘ │
   │  ┌──────────┐ ┌──────────────────────────────┐ │
   │  │  Wizard  │ │  Tray Popover / Notification │ │
-  │  │ Dialog   │ │                              │ │
+  │  │ Dialog   │ │  (structural path only)      │ │
   │  │ (7-step) │ │                              │ │
   │  └──────────┘ └──────────────────────────────┘ │
   │                                                 │
@@ -303,16 +305,22 @@ daemon's internals — the DBus contract is the stable API.
   │                                                 │
   │  ┌──────────────┐  ┌──────────────────────┐    │
   │  │ DaemonInter- │  │    StatusMonitor      │    │
-  │  │ face (QDBus) │  │  250 ms poll timer   │    │
-  │  │              │  │  coalesces responses  │    │
-  │  └──────┬───────┘  └──────────┬───────────┘    │
+  │  │ face (QDBus) │  │  Overview path:       │    │
+  │  │              │  │   telemetry 100 ms    │    │
+  │  └──────┬───────┘  │   structure 2000 ms   │    │
+  │         │          │  Legacy path:          │    │
+  │         │          │   coalesced 250 ms    │    │
+  │         │          └──────────┬───────────┘    │
   │         │                     │                 │
   │  ┌──────┴─────────────────────┴──────────────┐ │
   │  │              Model classes                 │ │
-  │  │  FanListModel   (severity-sorted,         │ │
-  │  │                   diff-updated)            │ │
-  │  │  SensorListModel                          │ │
-  │  │  DraftModel       (edit buffer)           │ │
+  │  │  OverviewModel    (fast telemetry + rare   │ │
+  │  │                     structural split)      │ │
+  │  │  OverviewFanRow   (25-property stable row) │ │
+  │  │  FanListModel      (severity-sorted,       │ │
+  │  │                     diff-updated, legacy)   │ │
+  │  │  SensorListModel   (legacy)               │ │
+  │  │  DraftModel        (edit buffer)           │ │
   │  │  LifecycleEventModel                      │ │
   │  └───────────────────────────────────────────┘ │
   └─────────────────────────────────────────────────┘
@@ -321,24 +329,52 @@ daemon's internals — the DBus contract is the stable API.
 **DaemonInterface** — QDBusInterface proxy wrapping the three DBus interfaces.
 Calls are async; signals are forwarded to the QML layer via Qt signal/slot.
 
-**StatusMonitor** — 250 ms polling timer. On each tick it fetches control
-status and other frequently-changing data, coalesces the DBus responses, then
-updates the model objects. Polling is used instead of reactive signal
-subscriptions because Qt6's QDBusConnection::connect() lacks lambda support,
-making signal-based updates impractical.
+**StatusMonitor** — dual-path refresh scheduler:
 
-**Models** — four model classes exposed to QML:
-- `FanListModel` — severity-sorted, diff-updated (only rows that changed are
-  signaled to the view).
+- **Overview telemetry path**: 100 ms timer calls `GetOverviewTelemetry()`.
+  Results go to `OverviewModel::applyTelemetry()` which sets per-property
+  values on `OverviewFanRow` objects. No model-level `dataChanged` is emitted
+  unless `visual_state` or `high_temp_alert` transitions occur (those signals
+  are needed by `TrayIcon` and `NotificationHandler`).
+
+- **Overview structural path**: 2000 ms cooldown-gated timer calls
+  `GetOverviewStructure()`. Results go to `OverviewModel::applyStructure()`
+  which may add/remove/reorder rows. Force-refresh triggers (bypassing
+  cooldown) fire on: daemon reconnect, write mutations, auto-tune completion,
+  and QML page-visibility changes.
+
+- **Legacy path**: 250 ms timer calls `Snapshot()`, `GetRuntimeState()`,
+  `GetControlStatus()`, `GetDraftConfig()`, `GetDegradedSummary()`.
+  Responses are coalesced into `FanListModel::refresh()` and
+  `SensorListModel::refresh()`. Used by `FanDetailPage`, `InventoryPage`,
+  and `WizardDialog`.
+
+**Models** — six model/object classes exposed to QML:
+- `OverviewModel` — purpose-built overview list with split structure/telemetry
+  paths. Exposes `RowObjectRole` returning `OverviewFanRow*` for direct QML
+  property binding without model-level `dataChanged` cascades.
+- `OverviewFanRow` — 25-property QObject per fan row, split into structural
+  (13) and telemetry (12) groups with per-property NOTIFY signals.
+- `FanListModel` — severity-sorted, diff-updated. Legacy path for detail
+  pages, inventory, and wizard.
 - `SensorListModel` — hardware sensors from inventory.
 - `DraftModel` — edit buffer for the draft/apply flow.
 - `LifecycleEventModel` — event log entries.
 
+**TrayIcon and NotificationHandler** read from `OverviewModel` (not
+`FanListModel`) and connect only to structural-model signals
+(`modelReset`, `rowsInserted`, `rowsRemoved`, `dataChanged`), decoupling
+them from the 100 ms telemetry churn.
+
 **Pages and components**:
-- `OverviewPage` — dashboard with live fan status.
-- `InventoryPage` — hardware browser.
-- `FanDetailPage` — tabbed view (config / auto-tune / advanced).
-- `WizardDialog` — 7-step fan enrollment flow.
+- `OverviewPage` — dashboard with live fan status. Reads from `OverviewModel`
+  via `rowObject` binding for surgical per-property QML updates. Fixed-width
+  monospace layout for rapidly changing numeric fields (temperature, RPM,
+  output).
+- `InventoryPage` — hardware browser. Reads from `FanListModel` (legacy path).
+- `FanDetailPage` — tabbed view (config / auto-tune / advanced). Reads from
+  `FanListModel` via `fanById()` (legacy path).
+- `WizardDialog` — 7-step fan enrollment flow. Reads from `FanListModel` (legacy path).
 - `TrayIcon` (KStatusNotifierItem), `NotificationHandler` (KNotification),
   `TrayPopover`.
 
@@ -348,7 +384,7 @@ making signal-based updates impractical.
 
 | Area | Issue | Impact |
 |---|---|---|
-| StatusMonitor | Polling (250 ms) instead of reactive DBus signal subscriptions | Wastes bus bandwidth; latency up to 250 ms. Caused by Qt6 QDBusConnection::connect() lacking lambda support. |
+| OverviewModel | `applyStructure()` uses `beginResetModel()` instead of `beginMoveRows` | Full model rebuild on structural changes; acceptable because structural refreshes are rare (~2s cooldown-gated) |
 | Build system | KF6 dev packages need proper CMake `find_package` support | Fragile builds on some distros |
 | GUI navigation | Some tray→main-window and popover integration stubs | Incomplete shell interaction |
 | FanDetailPage | Advanced tab values are hardcoded | Not reflecting live state |

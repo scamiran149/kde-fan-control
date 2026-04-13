@@ -18,7 +18,7 @@
 #include <QString>
 
 class StatusMonitor;
-class FanListModel;
+class OverviewModel;
 
 class NotificationHandler : public QObject
 {
@@ -26,24 +26,20 @@ class NotificationHandler : public QObject
 
 public:
     explicit NotificationHandler(StatusMonitor *statusMonitor,
-                                 FanListModel *fanModel,
+                                 OverviewModel *overviewModel,
                                  QObject *parent = nullptr);
 
-    // Called when the user acknowledges alerts from tray or main window
     Q_INVOKABLE void clearAcknowledgedState();
 
 private slots:
-    void onModelReset();
-    void onDataChanged();
+    void onStructureChanged();
 
 private:
     void checkTransitions();
 
     StatusMonitor *m_statusMonitor;
-    FanListModel *m_fanModel;
+    OverviewModel *m_overviewModel;
 
-    // Tracks previous state per fan to detect transitions.
-    // Maps fan_id -> { state, hasHighTemp }
     struct FanState {
         QString state;
         bool hasHighTemp = false;

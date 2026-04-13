@@ -9,6 +9,7 @@
 
 import QtQuick
 import QtQuick.Controls as Controls
+import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 
 Controls.Label {
@@ -17,6 +18,7 @@ Controls.Label {
     property int millidegrees: 0
     property bool showUnit: true
     property bool showNoSource: false
+    property bool fixedWidth: false
 
     text: {
         if (showNoSource) {
@@ -30,10 +32,16 @@ Controls.Label {
     }
 
     font.weight: Font.Normal
+    font.family: fixedWidth ? "monospace" : Kirigami.Theme.defaultFont.family
+    font.pixelSize: fixedWidth ? Kirigami.Theme.smallFont.pixelSize : Kirigami.Theme.defaultFont.pixelSize
     color: {
         if (showNoSource || millidegrees <= 0) {
             return Kirigami.Theme.disabledTextColor
         }
         return Kirigami.Theme.textColor
     }
+
+    Layout.minimumWidth: fixedWidth ? 80 : -1
+    Layout.preferredWidth: fixedWidth ? 80 : -1
+    horizontalAlignment: fixedWidth ? Text.AlignRight : Text.AlignLeft
 }

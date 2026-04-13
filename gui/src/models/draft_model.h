@@ -159,7 +159,7 @@ private:
     QString m_aggregation;
     qint64 m_targetTempMillidegrees = 0;
     double m_kp = 1.0;
-    double m_ki = 0.1;
+    double m_ki = 1.0;
     double m_kd = 0.5;
 
     bool m_autoTuneRunning = false;

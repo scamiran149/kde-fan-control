@@ -6,11 +6,15 @@
  * Creates and manages the KStatusNotifierItem-based system tray icon.
  * Severity precedence per UI-SPEC:
  *   fallback > degraded > high-temp > managed > unmanaged > disconnected
+ *
+ * Reads state from OverviewModel (structural path) rather than
+ * FanListModel to decouple from 100ms telemetry churn.
  */
 
 #include "tray_icon.h"
 #include "status_monitor.h"
-#include "models/fan_list_model.h"
+#include "models/overview_model.h"
+#include "models/overview_fan_row.h"
 
 #include <knotification.h>
 
@@ -20,26 +24,23 @@
 #include <QDebug>
 
 TrayIcon::TrayIcon(StatusMonitor *statusMonitor,
-                   FanListModel *fanModel,
+                   OverviewModel *overviewModel,
                    QObject *parent)
     : QObject(parent)
     , m_statusMonitor(statusMonitor)
-    , m_fanModel(fanModel)
+    , m_overviewModel(overviewModel)
     , m_worstSeverity(QStringLiteral("disconnected"))
 {
-    // Create the system tray icon
     m_sni = new KStatusNotifierItem(QStringLiteral("org.kde.fancontrol"), this);
     m_sni->setCategory(KStatusNotifierItem::SystemServices);
     m_sni->setTitle(QStringLiteral("Fan Control"));
 
-    // Set initial disconnected state
     m_sni->setIconByName(QStringLiteral("network-offline"));
     m_sni->setStatus(KStatusNotifierItem::Passive);
     m_sni->setToolTipIconByName(QStringLiteral("network-offline"));
     m_sni->setToolTipTitle(QStringLiteral("Fan Control"));
     m_sni->setToolTipSubTitle(QStringLiteral("Daemon disconnected"));
 
-    // Context menu actions
     auto *openAction = new QAction(QStringLiteral("Open Fan Control"), this);
     connect(openAction, &QAction::triggered, this, &TrayIcon::activateMainWindow);
 
@@ -53,29 +54,26 @@ TrayIcon::TrayIcon(StatusMonitor *statusMonitor,
 
     m_sni->setContextMenu(menu);
 
-    // When the tray icon is clicked (activateRequested), show/raise
-    // the main window. The QML layer can additionally show the popover.
     connect(m_sni, &KStatusNotifierItem::activateRequested,
             this, &TrayIcon::activateMainWindow);
 
-    // Connect to StatusMonitor for daemon state changes
     connect(m_statusMonitor, &StatusMonitor::daemonConnectedChanged,
             this, [this]() {
                 bool connected = m_statusMonitor->daemonConnected();
                 setDaemonConnected(connected);
             });
 
-    // Connect to model changes to recompute severity
-    connect(m_fanModel, &FanListModel::dataChanged,
+    // Connect to structural model changes only (not telemetry)
+    connect(m_overviewModel, &OverviewModel::modelReset,
             this, &TrayIcon::updateSeverity);
-    connect(m_fanModel, &FanListModel::rowsInserted,
+    connect(m_overviewModel, &OverviewModel::rowsInserted,
             this, &TrayIcon::updateSeverity);
-    connect(m_fanModel, &FanListModel::rowsRemoved,
+    connect(m_overviewModel, &OverviewModel::rowsRemoved,
             this, &TrayIcon::updateSeverity);
-    connect(m_fanModel, &FanListModel::modelReset,
+    // dataChanged fires for structural roles (VisualStateRole etc)
+    connect(m_overviewModel, &OverviewModel::dataChanged,
             this, &TrayIcon::updateSeverity);
 
-    // Initial state
     m_daemonConnected = m_statusMonitor->daemonConnected();
 }
 
@@ -86,12 +84,10 @@ void TrayIcon::setDaemonConnected(bool connected)
     m_daemonConnected = connected;
     Q_EMIT daemonConnectedChanged();
 
-    // Clear acknowledged state on reconnect since state may have changed
     if (connected) {
         m_alertsAcknowledged = false;
         updateSeverity();
     } else {
-        // When daemon disconnects, reset to disconnected state
         m_managedFanCount = 0;
         m_alertCount = 0;
         Q_EMIT managedFanCountChanged();
@@ -108,19 +104,22 @@ void TrayIcon::setDaemonConnected(bool connected)
 void TrayIcon::updateSeverity()
 {
     if (!m_daemonConnected) {
-        // Already handled in setDaemonConnected
         return;
     }
 
     int managedCount = 0;
     int alertCount = 0;
-    int worstRank = 999; // Lower is worse per severity precedence
+    int worstRank = 999;
 
-    const int rowCount = m_fanModel->rowCount();
+    const int rowCount = m_overviewModel->rowCount();
     for (int i = 0; i < rowCount; ++i) {
-        QModelIndex idx = m_fanModel->index(i, 0);
-        QString state = m_fanModel->data(idx, FanListModel::StateRole).toString();
-        bool highTemp = m_fanModel->data(idx, FanListModel::HighTempAlertRole).toBool();
+        QModelIndex idx = m_overviewModel->index(i, 0);
+        OverviewFanRow *row = m_overviewModel->data(idx, OverviewModel::RowObjectRole).value<OverviewFanRow *>();
+        if (!row)
+            continue;
+
+        QString state = row->visualState();
+        bool highTemp = row->highTempAlert();
 
         int rank = severityRank(state, highTemp);
         if (rank < worstRank) {
@@ -137,7 +136,6 @@ void TrayIcon::updateSeverity()
         }
     }
 
-    // If no fans at all, severity is disconnected (handled above) or passive
     QString newSeverity;
     if (worstRank <= 0)      newSeverity = QStringLiteral("fallback");
     else if (worstRank <= 1)  newSeverity = QStringLiteral("degraded");
@@ -162,7 +160,6 @@ void TrayIcon::updateSeverity()
         m_alertCount = alertCount;
         Q_EMIT alertCountChanged();
         Q_EMIT hasStickyAlertsChanged();
-        // New alerts clear the acknowledged flag per D-12
         if (alertCount > 0) {
             m_alertsAcknowledged = false;
         }
@@ -190,7 +187,6 @@ void TrayIcon::updateToolTip()
     if (m_worstSeverity == QStringLiteral("disconnected")) {
         subtitle = QStringLiteral("Daemon disconnected");
     } else {
-        // Primary: severity summary
         if (m_worstSeverity == QStringLiteral("fallback")) {
             subtitle = QStringLiteral("%1 fan(s) in fallback").arg(m_alertCount);
         } else if (m_worstSeverity == QStringLiteral("degraded")) {
@@ -203,7 +199,6 @@ void TrayIcon::updateToolTip()
             subtitle = QStringLiteral("No managed fans");
         }
 
-        // Secondary: counts
         subtitle += QStringLiteral("\n%1 managed, %2 alerts")
                         .arg(m_managedFanCount)
                         .arg(m_alertCount);
@@ -218,17 +213,12 @@ void TrayIcon::acknowledgeAlerts()
 {
     if (m_alertCount > 0) {
         m_alertsAcknowledged = true;
-        // Acknowledged alerts clear UI stickiness per D-12
-        // This doesn't alter daemon state — it only clears the
-        // sticky flag in the tray popover and main window banners.
         Q_EMIT hasStickyAlertsChanged();
     }
 }
 
 int TrayIcon::severityRank(const QString &state, bool highTempAlert)
 {
-    // Per UI-SPEC severity precedence:
-    // fallback(0) > degraded(1) > high-temp(2) > managed(3) > unmanaged(4) > disconnected
     if (state == QStringLiteral("fallback"))     return 0;
     if (state == QStringLiteral("degraded"))      return 1;
     if (state == QStringLiteral("managed") && highTempAlert) return 2;
@@ -236,7 +226,7 @@ int TrayIcon::severityRank(const QString &state, bool highTempAlert)
     if (state == QStringLiteral("unmanaged"))     return 4;
     if (state == QStringLiteral("partial"))        return 5;
     if (state == QStringLiteral("unavailable"))    return 6;
-    return 7; // unknown
+    return 7;
 }
 
 QString TrayIcon::severityIcon(const QString &severity)
@@ -246,7 +236,6 @@ QString TrayIcon::severityIcon(const QString &severity)
     if (severity == QStringLiteral("high-temp"))   return QStringLiteral("temperature-warm");
     if (severity == QStringLiteral("managed"))     return QStringLiteral("dialog-positive");
     if (severity == QStringLiteral("unmanaged"))    return QStringLiteral("dialog-information");
-    // disconnected or unknown
     return QStringLiteral("network-offline");
 }
 
@@ -256,7 +245,5 @@ KStatusNotifierItem::ItemStatus TrayIcon::severityStatus(const QString &severity
     if (severity == QStringLiteral("degraded"))    return KStatusNotifierItem::NeedsAttention;
     if (severity == QStringLiteral("high-temp"))   return KStatusNotifierItem::NeedsAttention;
     if (severity == QStringLiteral("managed"))     return KStatusNotifierItem::Active;
-    // unmanaged or disconnected -> Passive
     return KStatusNotifierItem::Passive;
 }
-

@@ -6,6 +6,11 @@
  * QAbstractListModel for the fan overview dashboard.
  * Merges inventory, runtime state, and draft config JSON
  * into rows of FanStateInfo objects sorted by severity order.
+ *
+ * Uses diff-based updates: value-only changes emit dataChanged()
+ * so QML delegates update in-place without destruction/recreation.
+ * Structural changes (fan added/removed/reordered) fall back to
+ * beginResetModel/endResetModel.
  */
 
 #ifndef FAN_LIST_MODEL_H
@@ -25,6 +30,8 @@ public:
     enum Roles {
         FanIdRole = Qt::UserRole + 1,
         DisplayNameRole,
+        FriendlyNameRole,
+        LabelRole,
         SupportStateRole,
         ControlModeRole,
         StateRole,
@@ -52,7 +59,15 @@ public:
 private:
     static int severityOrder(const QString &state, bool highTempAlert);
 
+    void applyFanData(FanStateInfo *info,
+                      const QJsonObject &fan,
+                      const QMap<QString, QJsonObject> &runtimeMap,
+                      const QMap<QString, qint64> &sensorTemps,
+                      const QJsonObject &fans,
+                      const QJsonObject &controlStatus);
+
     QList<FanStateInfo *> m_fans;
+    bool m_initialized = false;
 };
 
 #endif // FAN_LIST_MODEL_H

@@ -168,7 +168,7 @@ The daemon tests use `tokio::test(flavor = "current_thread")` to avoid needing a
 
 ## Known technical debt to work around
 
-1. **StatusMonitor polling:** The GUI polls every 250ms instead of subscribing to DBus signals. This is because Qt6's `QDBusConnection::connect()` doesn't support lambda callbacks. No workaround needed — polling works fine for the UI refresh rate.
+1. **OverviewModel `beginResetModel`:** The overview model uses `beginResetModel()` on structural changes instead of the more granular `beginMoveRows`. This is acceptable because structural refreshes are rare (2000ms cooldown-gated), but could be optimized later for very large fan counts.
 
 2. **KF6 CMake packages:** Some KF6 dev packages don't provide standard CMake configs. If the build can't find them, install the development headers and the shared libraries separately.
 

@@ -156,6 +156,18 @@ void DaemonInterface::autoTuneResult(const QString &fanId)
               [this, fanId](const QString &json) { Q_EMIT autoTuneResultReady(fanId, json); });
 }
 
+void DaemonInterface::overviewStructure()
+{
+    callAsync(s_lifecycleIface, QStringLiteral("GetOverviewStructure"), {},
+              [this](const QString &json) { Q_EMIT overviewStructureResult(json); });
+}
+
+void DaemonInterface::overviewTelemetry()
+{
+    callAsync(s_lifecycleIface, QStringLiteral("GetOverviewTelemetry"), {},
+              [this](const QString &json) { Q_EMIT overviewTelemetryResult(json); });
+}
+
 // --- Write methods (async, require root) ---
 
 void DaemonInterface::setSensorName(const QString &id, const QString &name)
@@ -188,16 +200,16 @@ void DaemonInterface::removeFanName(const QString &id)
 
 void DaemonInterface::setDraftFanEnrollment(const QString &fanId, bool managed,
                                             const QString &controlMode,
-                                            const QStringList &tempSources,
-                                            const QString &aggregation)
+                                            const QStringList &tempSources)
 {
-    callAsyncVoid(s_lifecycleIface, QStringLiteral("SetDraftFanEnrollment"),
-                  {QVariant::fromValue(fanId),
-                   QVariant::fromValue(managed),
-                   QVariant::fromValue(controlMode),
-                   QVariant::fromValue(tempSources),
-                   QVariant::fromValue(aggregation)},
-                  QStringLiteral("setDraftFanEnrollment"));
+    callAsync(s_lifecycleIface, QStringLiteral("SetDraftFanEnrollment"),
+              {QVariant::fromValue(fanId),
+               QVariant::fromValue(managed),
+               QVariant::fromValue(controlMode),
+               QVariant::fromValue(tempSources)},
+              [this](const QString &) {
+                  Q_EMIT writeSucceeded(QStringLiteral("setDraftFanEnrollment"));
+              });
 }
 
 void DaemonInterface::removeDraftFan(const QString &fanId)
@@ -247,9 +259,11 @@ void DaemonInterface::acceptAutoTune(const QString &fanId)
 
 void DaemonInterface::setDraftFanControlProfile(const QString &fanId, const QString &profileJson)
 {
-    callAsyncVoid(s_controlIface, QStringLiteral("SetDraftFanControlProfile"),
-                  {QVariant::fromValue(fanId), QVariant::fromValue(profileJson)},
-                  QStringLiteral("setDraftFanControlProfile"));
+    callAsync(s_controlIface, QStringLiteral("SetDraftFanControlProfile"),
+              {QVariant::fromValue(fanId), QVariant::fromValue(profileJson)},
+              [this](const QString &) {
+                  Q_EMIT writeSucceeded(QStringLiteral("setDraftFanControlProfile"));
+              });
 }
 
 // --- Private helpers ---
@@ -260,6 +274,10 @@ void DaemonInterface::callAsync(
     const QList<QVariant> &args,
     const std::function<void(const QString &)> &onSuccess)
 {
+    if (qEnvironmentVariableIsSet("KFC_GUI_DEBUG")) {
+        qInfo().noquote() << QStringLiteral("KFC_GUI_DEBUG callAsync: %1 args=%2").arg(method, QString::number(args.count()));
+    }
+
     QDBusInterface &iface = (interface == s_inventoryIface) ? m_inventoryIface
                          : (interface == s_lifecycleIface) ? m_lifecycleIface
                          : m_controlIface;
@@ -272,8 +290,14 @@ void DaemonInterface::callAsync(
                          w->deleteLater();
                          QDBusPendingReply<QString> reply = *w;
                          if (reply.isError()) {
+                             if (qEnvironmentVariableIsSet("KFC_GUI_DEBUG")) {
+                                 qInfo().noquote() << QStringLiteral("KFC_GUI_DEBUG callAsync FAILED: %1 %2").arg(method, reply.error().message());
+                             }
                              handleDBusError(method, reply.error());
                          } else {
+                             if (qEnvironmentVariableIsSet("KFC_GUI_DEBUG")) {
+                                 qInfo().noquote() << QStringLiteral("KFC_GUI_DEBUG callAsync OK: %1").arg(method);
+                             }
                              setLastError(QString());
                              onSuccess(reply.value());
                          }
@@ -286,6 +310,10 @@ void DaemonInterface::callAsyncVoid(
     const QList<QVariant> &args,
     const QString &writeMethodLabel)
 {
+    if (qEnvironmentVariableIsSet("KFC_GUI_DEBUG")) {
+        qInfo().noquote() << QStringLiteral("KFC_GUI_DEBUG callAsyncVoid: %1 args=%2 label=%3").arg(method, QString::number(args.count()), writeMethodLabel);
+    }
+
     QDBusInterface &iface = (interface == s_inventoryIface) ? m_inventoryIface
                          : (interface == s_lifecycleIface) ? m_lifecycleIface
                          : m_controlIface;
@@ -298,9 +326,15 @@ void DaemonInterface::callAsyncVoid(
                          w->deleteLater();
                          QDBusPendingReply<void> reply = *w;
                          if (reply.isError()) {
+                             if (qEnvironmentVariableIsSet("KFC_GUI_DEBUG")) {
+                                 qInfo().noquote() << QStringLiteral("KFC_GUI_DEBUG callAsyncVoid FAILED: %1 %2").arg(writeMethodLabel, reply.error().message());
+                             }
                              handleDBusError(writeMethodLabel, reply.error());
                              Q_EMIT writeFailed(writeMethodLabel, reply.error().message());
                          } else {
+                             if (qEnvironmentVariableIsSet("KFC_GUI_DEBUG")) {
+                                 qInfo().noquote() << QStringLiteral("KFC_GUI_DEBUG callAsyncVoid OK: %1").arg(writeMethodLabel);
+                             }
                              setLastError(QString());
                              Q_EMIT writeSucceeded(writeMethodLabel);
                          }

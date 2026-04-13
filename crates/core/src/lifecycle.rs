@@ -931,12 +931,10 @@ mod tests {
         }
 
         // Reconciled config should contain the fan.
-        assert!(
-            result
-                .reconciled_config
-                .fans
-                .contains_key("hwmon-test-0000000000000001-fan1")
-        );
+        assert!(result
+            .reconciled_config
+            .fans
+            .contains_key("hwmon-test-0000000000000001-fan1"));
     }
 
     #[test]
@@ -1089,18 +1087,14 @@ mod tests {
         assert_eq!(result.degraded_reasons.len(), 1);
 
         // Reconciled config should only have the real fan.
-        assert!(
-            result
-                .reconciled_config
-                .fans
-                .contains_key("hwmon-test-0000000000000001-fan1")
-        );
-        assert!(
-            !result
-                .reconciled_config
-                .fans
-                .contains_key("hwmon-ghost-0000000000000003-fan1")
-        );
+        assert!(result
+            .reconciled_config
+            .fans
+            .contains_key("hwmon-test-0000000000000001-fan1"));
+        assert!(!result
+            .reconciled_config
+            .fans
+            .contains_key("hwmon-ghost-0000000000000003-fan1"));
     }
 
     // --- Ownership tests ---
@@ -1282,11 +1276,9 @@ mod tests {
             }
             _ => panic!("expected Managed status for fan1"),
         }
-        assert!(
-            state
-                .owned_fans
-                .contains(&"hwmon-test-0000000000000001-fan1".to_string())
-        );
+        assert!(state
+            .owned_fans
+            .contains(&"hwmon-test-0000000000000001-fan1".to_string()));
     }
 
     #[test]
@@ -1408,12 +1400,10 @@ mod tests {
             incident.affected_fans,
             vec!["hwmon-test-0000000000000001-fan1"]
         );
-        assert!(
-            !incident
-                .affected_fans
-                .iter()
-                .any(|fan| fan == "fan-unmanaged")
-        );
+        assert!(!incident
+            .affected_fans
+            .iter()
+            .any(|fan| fan == "fan-unmanaged"));
     }
 
     #[test]

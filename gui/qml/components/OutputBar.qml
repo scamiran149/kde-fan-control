@@ -13,11 +13,13 @@ import org.kde.kirigami as Kirigami
 
 Item {
     id: outputBar
-    width: Math.max(96, barLabel.width + barTrack.width + Kirigami.Units.smallSpacing)
+    width: fixedWidth ? 120 : Math.max(96, barLabel.width + barTrack.width + Kirigami.Units.smallSpacing)
     height: 8
 
     property double percent: 0.0
     property bool active: false
+    property bool fixedWidth: false
+    property string outputTextOverride: ""
 
     Rectangle {
         id: barTrack
@@ -46,10 +48,10 @@ Item {
         anchors.left: barTrack.right
         anchors.leftMargin: Kirigami.Units.smallSpacing
         anchors.verticalCenter: barTrack.verticalCenter
-        text: outputBar.active ?
-              outputBar.percent.toFixed(1) + "%" :
-              i18n("No control")
-        font: Kirigami.Theme.smallFont
+        text: outputBar.outputTextOverride.length > 0 ? outputBar.outputTextOverride :
+              (outputBar.active ? outputBar.percent.toFixed(1) + "%" : i18n("No control"))
+        font.family: outputBar.fixedWidth ? "monospace" : Kirigami.Theme.defaultFont.family
+        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
         color: outputBar.active ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
     }
 }

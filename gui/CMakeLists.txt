@@ -22,11 +22,16 @@ endif()
 # to use its C++ API. For now the GUI only uses QML icon lookups.
 find_package(KF6IconThemes QUIET)
 
-# KF6 StatusNotifierItem for system tray (Plan 03 dependency)
-find_package(KF6StatusNotifierItem QUIET)
+# KF6 StatusNotifierItem for system tray
+find_package(KF6StatusNotifierItem REQUIRED)
 
-# KF6 Notifications for desktop notifications (Plan 03 dependency)
-find_package(KF6Notifications QUIET)
+# KF6 Notifications for desktop notifications
+find_package(KF6Notifications REQUIRED)
+
+# KF6 i18n for exposing i18n() into QML
+find_package(KF6I18n REQUIRED)
+
+qt_add_executable(gui_app src/main.cpp)
 
 qt_add_qml_module(gui_app
     URI org.kde.fancontrol
@@ -44,8 +49,9 @@ qt_add_qml_module(gui_app
         qml/components/OutputBar.qml
         qml/components/TemperatureDisplay.qml
         qml/components/PidField.qml
+        qml/components/RenameDialog.qml
+    NO_CACHEGEN
     SOURCES
-        src/main.cpp
         src/daemon_interface.h
         src/daemon_interface.cpp
         src/status_monitor.h
@@ -60,6 +66,9 @@ qt_add_qml_module(gui_app
         src/models/draft_model.cpp
         src/models/lifecycle_event_model.h
         src/models/lifecycle_event_model.cpp
+        src/models/overview_fan_row.h
+        src/models/overview_model.h
+        src/models/overview_model.cpp
         src/tray_icon.h
         src/tray_icon.cpp
         src/notification_handler.h
@@ -69,8 +78,6 @@ qt_add_qml_module(gui_app
 target_include_directories(gui_app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/models
-    /usr/include/KF5
-    /usr/include/KF5/KNotifications
 )
 
 target_link_libraries(gui_app PRIVATE
@@ -79,24 +86,15 @@ target_link_libraries(gui_app PRIVATE
     Qt6::Qml
     Qt6::DBus
     Qt6::Widgets
+    KF6::I18nQml
+    KF6::StatusNotifierItem
+    KF6::Notifications
 )
 
 # KF6 IconThemes (provides KIconColors, QIcon from theme) — link if found
 if(KF6IconThemes_FOUND)
     target_link_libraries(gui_app PRIVATE KF6::IconThemes)
 endif()
-
-# KF6 StatusNotifierItem + KF6 Notifications for tray icon and desktop notifications.
-# On this system the KF6 runtime shared libraries are available but dev packages
-# (CMake configs, .so symlinks) are not installed. The KF5 compat headers at
-# /usr/include/KF5/KNotifications/ provide the C++ API. We link directly against
-# the KF6 shared library files.
-set(KF6_SNI_LIB "/usr/lib/x86_64-linux-gnu/libKF6StatusNotifierItem.so.6")
-set(KF6_NOTIF_LIB "/usr/lib/x86_64-linux-gnu/libKF6Notifications.so.6")
-target_link_libraries(gui_app PRIVATE
-    ${KF6_SNI_LIB}
-    ${KF6_NOTIF_LIB}
-)
 
 # Kirigami QML module — note: at runtime the QML engine resolves the
 # org.kde.kirigami import via the QML plugin path. We don't need a
@@ -106,7 +104,7 @@ target_link_libraries(gui_app PRIVATE
 # Install the KNotification event configuration
 # KNotification looks for .notifyrc files in the data directory
 install(FILES data/kdefancontrol.notifyrc
-    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/knotifications5
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/knotifications6
 )
 
 install(TARGETS gui_app

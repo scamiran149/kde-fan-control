@@ -16,6 +16,7 @@
 
 #include <kstatusnotifieritem.h>
 class FanListModel;
+class OverviewModel;
 class StatusMonitor;
 
 class TrayIcon : public QObject
@@ -30,7 +31,7 @@ class TrayIcon : public QObject
 
 public:
     explicit TrayIcon(StatusMonitor *statusMonitor,
-                      FanListModel *fanModel,
+                      OverviewModel *overviewModel,
                       QObject *parent = nullptr);
 
     QString worstSeverity() const { return m_worstSeverity; }
@@ -67,7 +68,7 @@ private:
 
     KStatusNotifierItem *m_sni;
     StatusMonitor *m_statusMonitor;
-    FanListModel *m_fanModel;
+    OverviewModel *m_overviewModel;
 
     QString m_worstSeverity;
     int m_managedFanCount = 0;

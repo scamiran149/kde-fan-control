@@ -116,6 +116,8 @@ None.
 | `GetDegradedSummary` | `→ s` | none | Returns degraded state summary as JSON (§5.4) |
 | `GetLifecycleEvents` | `→ s` | none | Returns up to 64 recent lifecycle events as a JSON array (§5.7) |
 | `GetRuntimeState` | `→ s` | none | Returns full runtime state as JSON (§5.8) |
+| `GetOverviewStructure` | `→ s` | none | Returns overview structure snapshot as JSON (§5.12) |
+| `GetOverviewTelemetry` | `→ s` | none | Returns overview telemetry batch as JSON (§5.13) |
 
 **Write methods (root auth required):**
 
@@ -148,6 +150,18 @@ Returns a JSON array of up to 64 `LifecycleEvent` objects (§5.7), ordered most-
 #### `GetRuntimeState() → s`
 
 Returns a JSON string conforming to the `RuntimeState` schema (§5.8).
+
+#### `GetOverviewStructure() → s`
+
+Returns a JSON string conforming to the `OverviewStructureSnapshot` schema (§5.12). Contains pre-computed display names, state badges, ordering buckets, and UI hints for each fan row. Intended for the GUI overview page's structural update path — row membership, order, and display properties that change rarely.
+
+The daemon pre-formats strings (display names, state text, icon names, colors) so the GUI does not need to replicate the mapping logic. Rows are sorted by severity bucket (fallback → degraded → managed_hot → managed → unmanaged), then by display name within each bucket.
+
+#### `GetOverviewTelemetry() → s`
+
+Returns a JSON string conforming to the `OverviewTelemetryBatch` schema (§5.13). Contains live numeric values and pre-formatted display strings for each fan row. Intended for the GUI overview page's fast telemetry path — temperature, RPM, output percent, and alert flags that change every control loop tick.
+
+Pre-formatted strings (`temperature_text`, `rpm_text`, `output_text`) avoid client-side string formatting and enable fixed-width monospace layout without width recalculation.
 
 #### `SetDraftFanEnrollment(fan_id: s, managed: b, control_mode: s, temp_sources: as) → s`
 
@@ -629,6 +643,65 @@ Partial update object accepted by `SetDraftFanControlProfile`. All fields are op
 
 When a nested object (e.g. `pid_gains`) is provided, it replaces all fields within that sub-object. To update only `kp` while preserving `ki` and `kd`, the caller must read the current draft first, merge locally, then write the complete `pid_gains` object.
 
+### 5.12 OverviewStructureSnapshot
+
+Root object returned by `GetOverviewStructure()`.
+
+```json
+{
+  "rows": [OverviewStructureRow]
+}
+```
+
+#### OverviewStructureRow
+
+| Field | Type | Description |
+|---|---|---|
+| `fan_id` | string | Stable fan ID from inventory |
+| `display_name` | string | Human-readable name: friendly_name > label > fan_id |
+| `friendly_name` | string or null | User-assigned friendly name via `SetFanName`, or null if unset |
+| `hardware_label` | string or null | Label from `fan{N}_label` sysfs attribute, or null if absent |
+| `support_state` | string | One of: `"available"`, `"partial"`, `"unavailable"` |
+| `control_mode` | string or null | Current control mode (e.g. `"pwm"`). Present when managed. Null otherwise. |
+| `has_tach` | boolean | `true` if tachometer reading is available |
+| `support_reason` | string or null | Human-readable explanation when `support_state` is not `"available"` |
+| `ordering_bucket` | string | Severity bucket for row ordering: `"fallback"`, `"degraded"`, `"managed_hot"`, `"managed"`, `"unmanaged"` |
+| `state_text` | string | Pre-formatted badge text: `"Managed"`, `"Unmanaged"`, `"Degraded"`, `"Fallback"` |
+| `state_icon_name` | string | Pre-formatted freedesktop icon name: `"emblem-ok-symbolic"`, `"dialog-information-symbolic"`, `"data-warning-symbolic"`, `"dialog-error-symbolic"` |
+| `state_color` | string | Pre-formatted hex color for badge background: `"#43a047"` (managed), `"#9e9e9e"` (unmanaged), `"#ff9800"` (degraded), `"#e53935"` (fallback/managed_hot) |
+| `show_support_reason` | boolean | `true` when the support reason row should be displayed (unmanaged or degraded fans with a support_reason) |
+
+Rows are sorted by `ordering_bucket` severity (fallback=0, degraded=1, managed_hot=2, managed=3, unmanaged=4), then by `display_name` alphabetically within each bucket.
+
+### 5.13 OverviewTelemetryBatch
+
+Root object returned by `GetOverviewTelemetry()`.
+
+```json
+{
+  "rows": [OverviewTelemetryRow]
+}
+```
+
+#### OverviewTelemetryRow
+
+| Field | Type | Description |
+|---|---|---|
+| `fan_id` | string | Stable fan ID matching an `OverviewStructureRow.fan_id` |
+| `temperature_millidegrees` | integer | Current aggregated temperature in millidegrees Celsius. 0 if no live reading. |
+| `temperature_text` | string | Pre-formatted temperature display string: `"55.2 °C"` or `"No live reading"` |
+| `rpm` | integer | Current RPM reading. 0 if no tach or unreadable. |
+| `rpm_text` | string | Pre-formatted RPM display string: `"1240 RPM"`, `"0 RPM"`, or `"No RPM feedback"` |
+| `output_percent` | float | PID output as a percentage [0.0, 100.0]. 100.0 for degraded/fallback fans. |
+| `output_text` | string | Pre-formatted output display string: `"42.5%"` or `"No control"` |
+| `output_fill_ratio` | float | Normalized fill ratio for UI bar: `output_percent / 100.0`, clamped to [0.0, 1.0] |
+| `high_temp_alert` | boolean | `true` if aggregated temperature exceeds the safety threshold |
+| `show_rpm` | boolean | `true` when the RPM field should be displayed (managed/degraded/fallback fans with tach) |
+| `show_output` | boolean | `true` when the output bar should be displayed (managed/degraded/fallback fans) |
+| `visual_state` | string | State for UI badge coloring: `"managed"`, `"managed_hot"`, `"degraded"`, `"fallback"`, `"unmanaged"` |
+
+The `visual_state` field distinguishes `"managed_hot"` (managed fan with high-temp alert) from `"managed"` so the GUI can render a different badge color without recalculating the condition.
+
 ---
 
 ## 6. Authorization Model
@@ -659,6 +732,8 @@ The daemon will check Polkit first; if the Polkit authority is unavailable (e.g.
 | Lifecycle | `GetDegradedSummary` | none |
 | Lifecycle | `GetLifecycleEvents` | none |
 | Lifecycle | `GetRuntimeState` | none |
+| Lifecycle | `GetOverviewStructure` | none |
+| Lifecycle | `GetOverviewTelemetry` | none |
 | Lifecycle | `SetDraftFanEnrollment` | root |
 | Lifecycle | `RemoveDraftFan` | root |
 | Lifecycle | `DiscardDraft` | root |
