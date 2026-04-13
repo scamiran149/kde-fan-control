@@ -1161,7 +1161,7 @@ async fn check_polkit_authorization(
             &(
                 ("unix-process", subject_dict),
                 POLKIT_ACTION_ID,
-                HashMap::<&str, Value<'_>>::new(),
+                HashMap::<&str, &str>::new(),
                 1u32,
                 "",
             ),
