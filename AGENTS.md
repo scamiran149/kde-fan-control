@@ -146,7 +146,9 @@ Conventions not yet established. Will populate as patterns emerge during develop
 <!-- GSD:architecture-start source:ARCHITECTURE.md -->
 ## Architecture
 
-Architecture not yet mapped. Follow existing patterns found in the codebase.
+See [docs/architecture.md](docs/architecture.md) for the full system architecture.
+See [docs/dbus-api.md](docs/dbus-api.md) for the DBus interface contract.
+See [docs/safety-model.md](docs/safety-model.md) for the fail-safe design.
 <!-- GSD:architecture-end -->
 
 <!-- GSD:skills-start source:skills/ -->
@@ -169,6 +171,126 @@ Do not make direct repo edits outside a GSD workflow unless the user explicitly 
 <!-- GSD:workflow-end -->
 
 
+
+## AI Agent Quick Reference
+
+### Crate Map
+
+| Crate | Path | Language | Purpose | Key Types |
+|-------|------|----------|---------|-----------|
+| core | `crates/core/` | Rust | Shared types and logic | `AppConfig`, `DraftConfig`, `AppliedConfig`, `DraftFanEntry`, `AppliedFanEntry`, `InventorySnapshot`, `HwmonDevice`, `FanChannel`, `TemperatureSensor`, `PidController`, `PidGains`, `PidOutput`, `AggregationFn`, `ControlCadence`, `ActuatorPolicy`, `PidLimits`, `AutoTuneProposal`, `DegradedState`, `DegradedReason`, `LifecycleEventLog`, `ValidationResult`, `ValidationError`, `FallbackIncident`, `OwnedFanSet`, `RuntimeState`, `ControlRuntimeSnapshot`, `FanRuntimeStatus` |
+| daemon | `crates/daemon/` | Rust | Root DBus service | `ControlSupervisor`, `ControlIface`, `LifecycleIface`, `InventoryIface`, `AutoTuneExecutionState` |
+| cli | `crates/cli/` | Rust | DBus client | `InventoryProxy`, `LifecycleProxy`, `ControlProxy` (zbus generate) |
+| gui | `gui/` | C++/QML | KDE desktop app | `DaemonInterface`, `StatusMonitor`, `FanListModel`, `SensorListModel`, `DraftModel`, `LifecycleEventModel` |
+
+### DBus API Summary
+
+| Method | Interface | Auth | Returns |
+|--------|-----------|------|---------|
+| `Snapshot` | Inventory | none | JSON `InventorySnapshot` |
+| `SetSensorName` | Inventory | root | void |
+| `SetFanName` | Inventory | root | void |
+| `RemoveSensorName` | Inventory | root | void |
+| `RemoveFanName` | Inventory | root | void |
+| `GetDraftConfig` | Lifecycle | none | JSON `DraftConfig` |
+| `GetAppliedConfig` | Lifecycle | none | JSON `AppliedConfig` or "null" |
+| `GetDegradedSummary` | Lifecycle | none | JSON `DegradedState` |
+| `GetLifecycleEvents` | Lifecycle | none | JSON array |
+| `GetRuntimeState` | Lifecycle | none | JSON `RuntimeState` |
+| `SetDraftFanEnrollment` | Lifecycle | root | JSON `DraftConfig` |
+| `RemoveDraftFan` | Lifecycle | root | void |
+| `DiscardDraft` | Lifecycle | root | void |
+| `ValidateDraft` | Lifecycle | none | JSON `ValidationResult` |
+| `ApplyDraft` | Lifecycle | root | JSON `ValidationResult` |
+| `GetControlStatus` | Control | none | JSON map of `ControlRuntimeSnapshot` |
+| `GetAutoTuneResult` | Control | none | JSON `AutoTuneResultView` |
+| `StartAutoTune` | Control | root | void |
+| `AcceptAutoTune` | Control | root | JSON draft entry |
+| `SetDraftFanControlProfile` | Control | root | JSON draft entry |
+
+### Key Type Locations
+
+| Type | File | Line |
+|------|------|------|
+| `AppConfig` | `crates/core/src/config.rs` | 21 |
+| `DraftFanEntry` | `crates/core/src/config.rs` | 87 |
+| `AppliedFanEntry` | `crates/core/src/config.rs` | 150 |
+| `ValidationError` | `crates/core/src/config.rs` | 391 |
+| `DegradedReason` | `crates/core/src/config.rs` | 805 |
+| `FallbackIncident` | `crates/core/src/config.rs` | 237 |
+| `PidController` | `crates/core/src/control.rs` | 163 |
+| `PidGains` | `crates/core/src/control.rs` | 43 |
+| `AutoTuneProposal` | `crates/core/src/control.rs` | 119 |
+| `InventorySnapshot` | `crates/core/src/inventory.rs` | 9 |
+| `FanChannel` | `crates/core/src/inventory.rs` | 46 |
+| `OwnedFanSet` | `crates/core/src/lifecycle.rs` | 245 |
+| `RuntimeState` | `crates/core/src/lifecycle.rs` | 543 |
+| `ControlRuntimeSnapshot` | `crates/core/src/lifecycle.rs` | 491 |
+| `ControlSupervisor` | `crates/daemon/src/main.rs` | 58 |
+| `InventoryIface` | `crates/daemon/src/main.rs` | 852 |
+| `LifecycleIface` | `crates/daemon/src/main.rs` | 979 |
+| `ControlIface` | `crates/daemon/src/main.rs` | 1056 |
+
+### Common Task Recipes
+
+**Add a DBus method (full-stack):**
+1. Add method to interface struct in `crates/daemon/src/main.rs` with `#[interface]` attr
+2. Add proxy method in `crates/cli/src/main.rs` with `#[proxy]` attr
+3. Add `Q_INVOKABLE` to `gui/src/daemon_interface.h` + implementation in `.cpp`
+4. Update model/QML if UI needs the new method
+5. Add CLI subcommand if appropriate
+6. Add tests
+
+**Add a config field:**
+1. Add field to struct in `crates/core/src/config.rs` with `#[serde(default)]`
+2. Add `resolved_*()` method to `DraftFanEntry` if needed
+3. Update `validate_draft()` / `validate_cadence()` etc. if validation needed
+4. Update `apply_draft()` to propagate field from draft to applied
+5. Add backward-compat test: old config without new field deserializes with safe defaults
+
+**Add a GUI page:**
+1. Create `gui/qml/NewPage.qml` following Kirigami patterns
+2. Add QML file to `qt_add_qml_module()` in `gui/CMakeLists.txt`
+3. Wire page navigation in `gui/qml/Main.qml`
+4. Create/extend C++ model in `gui/src/models/`
+5. Register QML types in `gui/src/main.cpp`
+
+### Build & Test Commands
+
+```bash
+cargo build                              # Debug build (daemon + CLI)
+cargo build --release                    # Release build
+cargo test                               # All Rust tests
+cargo test -p kde-fan-control-daemon     # Daemon tests only
+cargo test -p kde-fan-control-core       # Core tests only
+cargo fmt                                # Format Rust code
+cargo clippy                             # Lint Rust code
+cmake -B gui/build -S gui               # Configure GUI
+cmake --build gui/build                 # Build GUI
+RUST_LOG=kde_fan_control=debug cargo run -p kde-fan-control-daemon -- --session-bus  # Dev daemon
+```
+
+### Documentation Index
+
+| Document | Purpose |
+|----------|---------|
+| [README.md](README.md) | Project front door — features, quick start, CLI summary |
+| [docs/architecture.md](docs/architecture.md) | System architecture — components, control loops, config lifecycle |
+| [docs/dbus-api.md](docs/dbus-api.md) | DBus interface contract — methods, signals, JSON schemas |
+| [docs/safety-model.md](docs/safety-model.md) | Fail-safe design — 4 fallback layers, invariant summary |
+| [docs/building.md](docs/building.md) | Build & development guide — prerequisites, running, testing |
+| [docs/cli-reference.md](docs/cli-reference.md) | Full CLI reference — all 16 commands with examples |
+| [docs/configuration.md](docs/configuration.md) | Config file reference — TOML schema, field docs, examples |
+| [CHANGELOG.md](CHANGELOG.md) | Version history |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guide — style, testing, task recipes |
+
+### Known Technical Debt
+
+- `StatusMonitor` uses 250ms polling instead of reactive DBus signal subscriptions (Qt6 `QDBusConnection::connect()` lacks lambda support)
+- KF6 dev packages need proper CMake `find_package` support in some distros
+- Tray/popover navigation stubs not fully wired
+- `FanDetailPage` advanced tab values are hardcoded (not wired to `DraftModel`)
+- Lifecycle events refresh only on page load
 
 <!-- GSD:profile-start -->
 ## Developer Profile
