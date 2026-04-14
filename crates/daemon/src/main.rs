@@ -796,6 +796,9 @@ impl ControlSupervisor {
                         self.clear_status(&fan_id).await;
                         break;
                     }
+                    if self.inner.degraded.read().await.entries.contains_key(&fan_id) {
+                        break;
+                    }
 
                     let Some(output_percent) = cached_auto_tuning.then_some(100.0).or(latest_output_percent) else {
                         continue;
