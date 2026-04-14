@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.kde.fancontrol</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Fan Control</name>
+  <summary>Per-fan PID control for Linux desktop systems</summary>
+
+  <description>
+    <p>
+      KDE Fan Control provides flexible, per-fan PID control for Linux desktop
+      machines where the standard fancontrol utility is too rigid or cumbersome.
+      It runs a privileged daemon that manages fan speeds using selectable
+      temperature inputs or aggregated sensor groups, and exposes control
+      through DBus to a KDE/Qt6 GUI, system tray app, and CLI.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Per-fan PID control with configurable gains, limits, and sample intervals</li>
+      <li>Automatic hardware discovery via Linux hwmon sysfs interface</li>
+      <li>KDE-native GUI with overview, inventory, and fan detail pages</li>
+      <li>System tray integration with status notifications</li>
+      <li>Staged draft/applied configuration lifecycle with validation</li>
+      <li>Auto-tune wizard for suggesting PID gains</li>
+      <li>Polkit-authenticated privileged operations</li>
+      <li>Fail-safe fallback: fans driven to maximum speed on daemon failure</li>
+      <li>Friendly name persistence for sensors and fans</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">org.kde.fancontrol.desktop</launchable>
+
+  <releases>
+    <release version="1.0.0" date="2026-04-12" type="stable">
+      <description>
+        <p>Initial release. All v1 requirements validated across 4 phases.</p>
+      </description>
+    </release>
+  </releases>
+
+  <provides>
+    <binary>kde-fan-control</binary>
+    <binary>kde-fan-control-gui</binary>
+  </provides>
+
+  <categories>
+    <category>System</category>
+    <category>Monitor</category>
+  </categories>
+
+  <content_rating type="oars-1.1" />
+
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+
+  <url type="homepage">https://github.com/scamiran149/kde-fan-control</url>
+  <url type="bugtracker">https://github.com/scamiran149/kde-fan-control/issues</url>
+</component>

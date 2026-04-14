@@ -1,0 +1,34 @@
+.TH KDE-FAN-CONTROL-GUI 1 "2026-04-13" "kde-fan-control 1.0.0" "User Commands"
+.SH NAME
+kde-fan-control-gui \- KDE-native GUI for fan control
+.SH SYNOPSIS
+.B kde-fan-control-gui
+.SH DESCRIPTION
+.B kde-fan-control-gui
+is the KDE/Qt6 graphical interface for the KDE Fan Control daemon.
+It provides an overview of managed fans, hardware inventory browsing,
+per-fan detail editing, a configuration wizard, and system tray
+integration with status notifications.
+.PP
+The GUI must run as a regular user (not root). Privileged
+operations such as enrolling fans or applying configuration
+changes require polkit authentication, prompted through the
+GUI's "Unlock" toolbar button.
+.PP
+The daemon (\fBkde-fan-control-daemon\fR) must be running on
+the system bus for the GUI to function.
+.SH ENVIRONMENT
+.TP
+.B QML2_IMPORT_PATH
+Additional QML module search paths. Must include the Kirigami
+QML plugin directory if it is not on the default path.
+.SH FILES
+.TP
+.I /usr/share/applications/org.kde.fancontrol.desktop
+Desktop entry file.
+.TP
+.I /usr/share/icons/hicolor/*/apps/kde-fan-control.*
+Application icons.
+.SH SEE ALSO
+.BR kde-fan-control (1),
+.BR kde-fan-control-daemon (8)

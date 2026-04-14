@@ -1,0 +1,82 @@
+.TH KDE-FAN-CONTROL 1 "2026-04-13" "kde-fan-control 1.0.0" "User Commands"
+.SH NAME
+kde-fan-control \- CLI client for KDE Fan Control daemon
+.SH SYNOPSIS
+.B kde-fan-control
+\fICOMMAND\fR [\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B kde-fan-control
+is the command-line interface for the KDE Fan Control daemon.
+It communicates with the daemon over DBus to inspect hardware,
+manage fan enrollment, configure PID control profiles, and
+monitor runtime state.
+.PP
+The daemon must be running on the system bus for most commands
+to succeed. Use \fB--direct\fR with \fBinventory\fR to scan
+hardware without the daemon.
+.SH COMMANDS
+.TP
+.B inventory
+List discovered hardware sensors and fan channels.
+Supports \fB--direct\fR for standalone scanning and
+\fB--root\fR for pointing at a fake sysfs tree.
+.TP
+.B rename
+Set a friendly name for a sensor or fan.
+.TP
+.B unname
+Remove a friendly name from a sensor or fan.
+.TP
+.B draft
+Show the current draft configuration.
+.TP
+.B applied
+Show the current applied configuration.
+.TP
+.B degraded
+Show the current degraded-state summary.
+.TP
+.B events
+Show recent lifecycle events.
+.TP
+.B enroll
+Stage a fan enrollment change in the draft configuration.
+.TP
+.B unenroll
+Remove a fan from the draft configuration.
+.TP
+.B discard
+Discard the entire draft configuration.
+.TP
+.B validate
+Validate the current draft without applying it.
+.TP
+.B apply
+Apply the current draft configuration. Requires root authorization.
+.TP
+.B state
+Show the current runtime state (managed, degraded, fallback, unmanaged).
+.TP
+.B control
+Stage PID control profile changes in the draft configuration.
+.TP
+.B auto-tune
+Start, inspect, or accept auto-tune proposals.
+.TP
+.B auth
+Check authorization for privileged operations. Triggers polkit auth if available.
+.SH ENVIRONMENT
+.TP
+.B RUST_LOG
+Set tracing filter (e.g., \fBkde_fan_control=debug\fR).
+.TP
+.B DBUS_SESSION_BUS_ADDRESS
+Used automatically when the system bus is unavailable to connect
+to the session bus for development.
+.SH FILES
+.TP
+.I /var/lib/kde-fan-control/config.toml
+Daemon-owned persistent configuration.
+.SH SEE ALSO
+.BR kde-fan-control-daemon (8),
+.BR kde-fan-control-gui (1)

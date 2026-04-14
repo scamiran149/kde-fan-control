@@ -2,3 +2,16 @@ target/
 .opencode/
 backend.log
 gui/build/
+.cargo/
+debian/cargo-home/
+debian/cargo-vendor/
+debian/files
+debian/kde-fan-control/
+debian/tmp/
+debian/*.substvars
+debian/debhelper/
+*.deb
+*.changes
+*.buildinfo
+*.dsc
+*.debhelper.log
