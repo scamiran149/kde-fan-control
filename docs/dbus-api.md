@@ -126,7 +126,7 @@ None.
 | `SetDraftFanEnrollment` | `(fan_id: s, managed: b, control_mode: s, temp_sources: as) → s` | root | Stage a fan enrollment change in the draft |
 | `RemoveDraftFan` | `(fan_id: s) → ()` | root | Remove a fan from the draft config |
 | `DiscardDraft` | `→ ()` | root | Clear the entire draft configuration |
-| `ValidateDraft` | `→ s` | root | Validate draft against live inventory; returns `ValidationResult` JSON (§5.5) |
+| `ValidateDraft` | `→ s` | none | Validate draft against live inventory; returns `ValidationResult` JSON (§5.5) |
 | `ApplyDraft` | `→ s` | polkit | Validate and promote draft to live; returns `ValidationResult` JSON (§5.5) |
 | `RequestAuthorization` | `→ ()` | polkit | Proactively check/obtain polkit authorization; triggers auth dialog if needed |
 
@@ -750,7 +750,7 @@ Installed at `/usr/share/polkit-1/actions/org.kde.fancontrol.policy`:
 | Lifecycle | `SetDraftFanEnrollment` | polkit |
 | Lifecycle | `RemoveDraftFan` | polkit |
 | Lifecycle | `DiscardDraft` | polkit |
-| Lifecycle | `ValidateDraft` | polkit |
+| Lifecycle | `ValidateDraft` | none |
 | Lifecycle | `ApplyDraft` | polkit |
 | Lifecycle | `RequestAuthorization` | polkit |
 | Control | `GetControlStatus` | none |
