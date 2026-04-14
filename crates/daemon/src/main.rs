@@ -66,8 +66,14 @@ fn persist_owned_fans(owned: &OwnedFanSet) {
     let doc = serde_json::json!({ "fans": fans });
     match serde_json::to_string_pretty(&doc) {
         Ok(json) => {
-            if let Err(e) = fs::write(&path, json) {
-                tracing::warn!(path = %path.display(), error = %e, "failed to persist owned-fans list");
+            let tmp_path = path.with_extension("json.tmp");
+            if let Err(e) = fs::write(&tmp_path, &json) {
+                tracing::warn!(path = %tmp_path.display(), error = %e, "failed to write owned-fans list (temp)");
+                return;
+            }
+            if let Err(e) = fs::rename(&tmp_path, &path) {
+                tracing::warn!(from = %tmp_path.display(), to = %path.display(), error = %e, "failed to rename owned-fans list");
+                let _ = fs::remove_file(&tmp_path);
             }
         }
         Err(e) => {
@@ -928,6 +934,158 @@ impl ControlSupervisor {
         };
         self.degrade_and_stop(fan_id, degraded_reason).await;
     }
+
+    async fn reassess_degraded_fans(&self, events: &Arc<RwLock<LifecycleEventLog>>) {
+        let recoverable_fans: Vec<String> = {
+            let degraded = self.inner.degraded.read().await;
+            degraded
+                .degraded_fan_ids()
+                .filter(|fan_id| degraded.is_fan_recoverable(fan_id))
+                .map(|s| s.to_string())
+                .collect()
+        };
+
+        if recoverable_fans.is_empty() {
+            return;
+        }
+
+        let snapshot = self.inner.snapshot.read().await.clone();
+        let applied = {
+            let config = self.inner.config.read().await;
+            config.applied.clone()
+        };
+
+        let Some(applied) = applied else {
+            return;
+        };
+
+        let mut recovered_ids = Vec::new();
+
+        for fan_id in recoverable_fans {
+            let Some(applied_entry) = applied.fans.get(&fan_id) else {
+                continue;
+            };
+
+            let outcome = kde_fan_control_core::lifecycle::reassess_single_fan(
+                &fan_id,
+                applied_entry,
+                &snapshot,
+            );
+
+            match outcome {
+                kde_fan_control_core::lifecycle::ReassessOutcome::Recoverable {
+                    fan_id: recovered_id,
+                    control_mode,
+                    temp_sources: _,
+                } => {
+                    let sysfs_path = snapshot
+                        .devices
+                        .iter()
+                        .flat_map(|d| d.fans.iter())
+                        .find(|f| f.id == recovered_id)
+                        .map(|f| {
+                            let device_path = snapshot
+                                .devices
+                                .iter()
+                                .find(|d| d.fans.iter().any(|fc| fc.id == recovered_id))
+                                .map(|d| d.sysfs_path.as_str())
+                                .unwrap_or("");
+                            format!("{}/pwm{}", device_path, f.channel)
+                        })
+                        .unwrap_or_default();
+
+                    self.inner.degraded.write().await.clear_fan(&recovered_id);
+
+                    self.inner
+                        .owned
+                        .write()
+                        .await
+                        .claim_fan(&recovered_id, control_mode, &sysfs_path);
+
+                    self.sync_panic_fallback_mirror().await;
+
+                    {
+                        let owned = self.inner.owned.read().await;
+                        persist_owned_fans(&owned);
+                    }
+
+                    let initial = control_snapshot_from_applied(applied_entry);
+                    self.inner
+                        .status
+                        .write()
+                        .await
+                        .insert(recovered_id.clone(), initial.clone());
+
+                    let local: Arc<StdMutex<ControlRuntimeSnapshot>> =
+                        Arc::new(StdMutex::new(initial.clone()));
+                    self.inner
+                        .fan_locals
+                        .write()
+                        .await
+                        .insert(recovered_id.clone(), Arc::clone(&local));
+
+                    let rpm_local: Arc<StdMutex<Option<u64>>> =
+                        Arc::new(StdMutex::new(None));
+                    self.inner
+                        .rpm_locals
+                        .write()
+                        .await
+                        .insert(recovered_id.clone(), Arc::clone(&rpm_local));
+
+                    let supervisor = self.clone();
+                    let fan_id_for_task = recovered_id.clone();
+                    let local_for_task = Arc::clone(&local);
+                    let rpm_local_for_task = Arc::clone(&rpm_local);
+                    let entry_clone = applied_entry.clone();
+                    let handle = tokio::spawn(async move {
+                        supervisor
+                            .run_fan_loop(
+                                fan_id_for_task,
+                                entry_clone,
+                                local_for_task,
+                                rpm_local_for_task,
+                            )
+                            .await;
+                    });
+
+                    self.inner
+                        .tasks
+                        .write()
+                        .await
+                        .insert(recovered_id.clone(), ControlTaskHandle { handle });
+
+                    events.write().await.push(LifecycleEvent {
+                        timestamp: kde_fan_control_core::lifecycle::format_iso8601_now(),
+                        reason: DegradedReason::FanRecovered {
+                            fan_id: recovered_id.clone(),
+                        },
+                        detail: Some(format!(
+                            "fan {} recovered from degraded state via re-assessment",
+                            recovered_id
+                        )),
+                    });
+
+                    tracing::info!(fan_id = %recovered_id, "recovered degraded fan via re-assessment");
+
+                    recovered_ids.push(recovered_id);
+                }
+                kde_fan_control_core::lifecycle::ReassessOutcome::StillDegraded {
+                    fan_id: _,
+                    reason: _,
+                } => {}
+            }
+        }
+
+        if !recovered_ids.is_empty() {
+            if let Some(connection) = self.inner.signal_connection.read().await.clone() {
+                emit_degraded_state_changed(&connection).await;
+                emit_applied_config_changed(&connection).await;
+                for fan_id in &recovered_ids {
+                    emit_lifecycle_event_appended(&connection, "fan_recovered", &format!("fan {} recovered from degraded state", fan_id)).await;
+                }
+            }
+        }
+    }
 }
 
 fn control_snapshot_from_applied(entry: &AppliedFanEntry) -> ControlRuntimeSnapshot {
@@ -1456,12 +1614,29 @@ impl ControlIface {
             draft_entry.temp_sources = value;
         }
         if let Some(value) = patch.target_temp_millidegrees {
+            // Validate that target temperature is within sensible bounds.
+            if let Some(target) = value {
+                if target <= 0 || target > 150_000 {
+                    return Err(fdo::Error::InvalidArgs(
+                        format!("target_temp_millidegrees {target} is out of bounds (must be 1..=150000)").into(),
+                    ));
+                }
+            }
             draft_entry.target_temp_millidegrees = value;
         }
         if let Some(value) = patch.aggregation {
             draft_entry.aggregation = value;
         }
         if let Some(value) = patch.pid_gains {
+            // Validate that PID gains are finite (not NaN or Infinity).
+            // serde_json deserializes JSON NaN/Infinity as actual f64 special values.
+            if let Some(ref gains) = value {
+                if !gains.is_finite() {
+                    return Err(fdo::Error::InvalidArgs(
+                        "pid_gains contains non-finite values (NaN or Infinity)".into(),
+                    ));
+                }
+            }
             draft_entry.pid_gains = value;
         }
         if let Some(value) = patch.cadence {
@@ -1474,6 +1649,14 @@ impl ControlIface {
             draft_entry.actuator_policy = value;
         }
         if let Some(value) = patch.pid_limits {
+            // Validate that PID limits are finite (not NaN or Infinity).
+            if let Some(ref limits) = value {
+                if !limits.is_finite() {
+                    return Err(fdo::Error::InvalidArgs(
+                        "pid_limits contains non-finite values (NaN or Infinity)".into(),
+                    ));
+                }
+            }
             draft_entry.pid_limits = value;
         }
         let response = serde_json::to_string(&*draft_entry)
@@ -2026,7 +2209,9 @@ fn validation_error_to_degraded_reason(
         | kde_fan_control_core::config::ValidationError::NoSensorForManagedFan { fan_id }
         | kde_fan_control_core::config::ValidationError::InvalidCadence { fan_id, .. }
         | kde_fan_control_core::config::ValidationError::InvalidActuatorPolicy { fan_id, .. }
-        | kde_fan_control_core::config::ValidationError::InvalidPidLimits { fan_id, .. } => {
+        | kde_fan_control_core::config::ValidationError::InvalidPidLimits { fan_id, .. }
+        | kde_fan_control_core::config::ValidationError::InvalidPidGains { fan_id, .. }
+        | kde_fan_control_core::config::ValidationError::InvalidTargetTemperature { fan_id, .. } => {
             DegradedReason::FanNoLongerEnrollable {
                 fan_id: fan_id.clone(),
                 support_state: kde_fan_control_core::inventory::SupportState::Unavailable,
@@ -2101,6 +2286,57 @@ async fn emit_auto_tune_completed(connection: &zbus::Connection, fan_id: &str) {
         }
         Err(error) => {
             tracing::warn!(error = %error, fan_id = %fan_id, "failed to access ControlIface for AutoTuneCompleted emission");
+        }
+    }
+}
+
+async fn emit_degraded_state_changed(connection: &zbus::Connection) {
+    match connection
+        .object_server()
+        .interface::<_, LifecycleIface>(BUS_PATH_LIFECYCLE)
+        .await
+    {
+        Ok(iface_ref) => {
+            if let Err(error) = iface_ref.degraded_state_changed().await {
+                tracing::warn!(error = %error, "failed to emit DegradedStateChanged signal");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to access LifecycleIface for DegradedStateChanged emission");
+        }
+    }
+}
+
+async fn emit_applied_config_changed(connection: &zbus::Connection) {
+    match connection
+        .object_server()
+        .interface::<_, LifecycleIface>(BUS_PATH_LIFECYCLE)
+        .await
+    {
+        Ok(iface_ref) => {
+            if let Err(error) = iface_ref.applied_config_changed().await {
+                tracing::warn!(error = %error, "failed to emit AppliedConfigChanged signal");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to access LifecycleIface for AppliedConfigChanged emission");
+        }
+    }
+}
+
+async fn emit_lifecycle_event_appended(connection: &zbus::Connection, event_kind: &str, detail: &str) {
+    match connection
+        .object_server()
+        .interface::<_, LifecycleIface>(BUS_PATH_LIFECYCLE)
+        .await
+    {
+        Ok(iface_ref) => {
+            if let Err(error) = iface_ref.lifecycle_event_appended(event_kind, detail).await {
+                tracing::warn!(error = %error, "failed to emit LifecycleEventAppended signal");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "failed to access LifecycleIface for LifecycleEventAppended emission");
         }
     }
 }
@@ -2517,6 +2753,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     snapshot.update_fan_rpm(&fan_id, Some(rpm));
                 }
             }
+        }
+    });
+
+    let reassess_control = control.clone();
+    let reassess_events = Arc::clone(&events);
+    let reassess_config = Arc::clone(&config);
+    tokio::spawn(async move {
+        let interval_ms = reassess_config
+            .read()
+            .await
+            .reassess_degraded_interval_ms
+            .max(1000);
+        let mut tick = interval(Duration::from_millis(interval_ms));
+        tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            reassess_control.reassess_degraded_fans(&reassess_events).await;
         }
     });
 
@@ -3386,5 +3639,88 @@ mod tests {
         assert_eq!(draft_entry.aggregation, Some(AggregationFn::Max));
         assert_eq!(draft_entry.pid_gains.expect("pid gains").kp, 2.5);
         assert_eq!(draft_entry.deadband_millidegrees, Some(3_500));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn degrade_and_stop_writes_fallback_pwm() {
+        let fixture = ControlFixture::new();
+        fixture.write_pwm_seed("0\n");
+
+        let snapshot = Arc::new(RwLock::new(test_snapshot(fixture.root())));
+        let config = Arc::new(RwLock::new(AppConfig {
+            applied: Some(applied_config_for(
+                "hwmon-test-0000000000000001-fan1",
+                "hwmon-test-0000000000000001-temp1",
+            )),
+            ..AppConfig::default()
+        }));
+        let owned = Arc::new(RwLock::new(OwnedFanSet::new()));
+        owned.write().await.claim_fan(
+            "hwmon-test-0000000000000001-fan1",
+            ControlMode::Pwm,
+            fixture.pwm_path().to_string_lossy().as_ref(),
+        );
+        let degraded = Arc::new(RwLock::new(DegradedState::new()));
+
+        let supervisor = ControlSupervisor::new(
+            Arc::clone(&snapshot),
+            Arc::clone(&config),
+            Arc::clone(&owned),
+            Arc::clone(&degraded),
+        );
+
+        supervisor
+            .degrade_and_stop(
+                "hwmon-test-0000000000000001-fan1",
+                DegradedReason::TempSourceMissing {
+                    fan_id: "hwmon-test-0000000000000001-fan1".to_string(),
+                    temp_id: "hwmon-test-0000000000000001-temp1".to_string(),
+                },
+            )
+            .await;
+
+        let pwm = fs::read_to_string(fixture.pwm_path()).expect("pwm should be readable");
+        assert_eq!(pwm.trim(), "255");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn degrade_and_stop_keeps_fan_owned() {
+        let fixture = ControlFixture::new();
+        fixture.write_pwm_seed("0\n");
+
+        let snapshot = Arc::new(RwLock::new(test_snapshot(fixture.root())));
+        let config = Arc::new(RwLock::new(AppConfig {
+            applied: Some(applied_config_for(
+                "hwmon-test-0000000000000001-fan1",
+                "hwmon-test-0000000000000001-temp1",
+            )),
+            ..AppConfig::default()
+        }));
+        let owned = Arc::new(RwLock::new(OwnedFanSet::new()));
+        owned.write().await.claim_fan(
+            "hwmon-test-0000000000000001-fan1",
+            ControlMode::Pwm,
+            fixture.pwm_path().to_string_lossy().as_ref(),
+        );
+        let degraded = Arc::new(RwLock::new(DegradedState::new()));
+
+        let supervisor = ControlSupervisor::new(
+            Arc::clone(&snapshot),
+            Arc::clone(&config),
+            Arc::clone(&owned),
+            Arc::clone(&degraded),
+        );
+
+        supervisor
+            .degrade_and_stop(
+                "hwmon-test-0000000000000001-fan1",
+                DegradedReason::TempSourceMissing {
+                    fan_id: "hwmon-test-0000000000000001-fan1".to_string(),
+                    temp_id: "hwmon-test-0000000000000001-temp1".to_string(),
+                },
+            )
+            .await;
+
+        assert!(owned.read().await.owns("hwmon-test-0000000000000001-fan1"));
     }
 }
