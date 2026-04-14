@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+    <defs>
+        <filter id="appShadow" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#000000" flood-opacity="0.3" />
+        </filter>
+        
+        <filter id="bladeShadow" x="-30%" y="-30%" width="160%" height="160%">
+            <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#000000" flood-opacity="0.4" />
+        </filter>
+        
+        <linearGradient id="baseGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#3a4045" />
+            <stop offset="100%" stop-color="#232629" />
+        </linearGradient>
+        
+        <linearGradient id="gaugeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#3daee9" />
+            <stop offset="50%" stop-color="#f67400" />
+            <stop offset="100%" stop-color="#ed1515" />
+        </linearGradient>
+        
+        <linearGradient id="bladeGrad" x1="0" y1="-70" x2="0" y2="0" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#54c1f9" />
+            <stop offset="100%" stop-color="#2980b9" />
+        </linearGradient>
+
+        <path id="blade" d="M -8,-15 Q -35,-45 -15,-68 A 70 70 0 0 1 25,-65 Q 12,-35 8,-15 Z" fill="url(#bladeGrad)" filter="url(#bladeShadow)"/>
+    </defs>
+
+    <rect x="20" y="20" width="216" height="216" rx="44" fill="url(#baseGrad)" filter="url(#appShadow)" stroke="#4d545b" stroke-width="2"/>
+
+    <path d="M 65.78 190.22 A 88 88 0 1 1 190.22 190.22" fill="none" stroke="#1d2021" stroke-width="12" stroke-linecap="round"/>
+
+    <path d="M 65.78 190.22 A 88 88 0 1 1 190.22 190.22" fill="none" stroke="url(#gaugeGrad)" stroke-width="12" stroke-linecap="round" />
+
+    <circle cx="128" cy="128" r="76" fill="#181b1d" filter="url(#appShadow)"/>
+    
+    <circle cx="128" cy="128" r="74" fill="none" stroke="#3a4045" stroke-width="2"/>
+
+    <g transform="translate(128, 128)">
+        <use href="#blade" />
+        <use href="#blade" transform="rotate(72)" />
+        <use href="#blade" transform="rotate(144)" />
+        <use href="#blade" transform="rotate(216)" />
+        <use href="#blade" transform="rotate(288)" />
+    </g>
+
+    <circle cx="128" cy="128" r="22" fill="#2a2e32" filter="url(#appShadow)"/>
+    <circle cx="128" cy="128" r="18" fill="none" stroke="#4d545b" stroke-width="2"/>
+    <circle cx="128" cy="128" r="4" fill="#3daee9" />
+
+    <circle cx="190.22" cy="65.78" r="10" fill="#eff0f1" filter="url(#appShadow)"/>
+    <circle cx="190.22" cy="65.78" r="4" fill="#f67400" />
+</svg>

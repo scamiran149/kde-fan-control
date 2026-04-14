@@ -1,5 +1,5 @@
 [Global]
-IconName=kde-fan-control-gui
+IconName=kde-fan-control
 Comment=KDE Fan Control Desktop Notifications
 
 [Event/fallback-active]

@@ -48,9 +48,10 @@ Three programs share one `core` crate and talk through the system bus:
 
 | Component | Language | LOC | Runs as | Role |
 |---|---|---|---|---|
-| **Daemon** | Rust | ~2200 | root | Reads sysfs, runs PID loops, writes PWM, owns config, serves DBus |
-| **CLI** | Rust | ~1500 | user | Thin DBus client; falls back to direct sysfs scan when daemon is down |
-| **GUI** | C++/QML | ~5400 + ~5400 | user | KDE-native Kirigami app; models, pages, tray, notifications |
+| **Daemon** | Rust | ~2400 | root | Reads sysfs, runs PID loops, writes PWM, owns config, serves DBus, sd-notify |
+| **CLI** | Rust | ~1550 | user | Thin DBus client; falls back to direct sysfs scan when daemon is down |
+| **GUI** | C++/QML | ~5500 + ~5500 | user | KDE-native Kirigami app; models, pages, tray, notifications, polkit unlock |
+| **Fallback** | Rust | ~70 | root | ExecStopPost helper: forces PWM 255 on crash/SIGKILL |
 | **Core crate** | Rust | ~1400 | — | Shared types: inventory, config/validation, PID, lifecycle/ownership |
 
 ---
@@ -66,8 +67,8 @@ Three programs share one `core` crate and talk through the system bus:
 
   ✗ CLI / GUI never write sysfs directly
   ✗ No secondary control surface besides DBus
-  ✓ Write methods currently require UID-0
-     (polkit authorization planned)
+  ✓ Write methods require polkit authorization
+     (falls back to UID-0 if polkit unavailable)
 ```
 
 The daemon is the only component with write access to fan-control sysfs
@@ -75,8 +76,18 @@ attributes. CLI and GUI are stateless clients that issue method calls over the
 system bus. This keeps privilege escalation narrow and auditable: every PWM
 write goes through one code path.
 
-Current auth is UID-0 check. A polkit layer will replace it so that unprivileged
-desktop users can manage fans without running the CLI as root.
+Authorization uses polkit with the action ID `org.kde.fancontrol.write-config`
+and `auth_admin_keep` semantics. Unprivileged desktop users can perform
+privileged operations after authenticating via a polkit dialog. If the polkit
+authority is unavailable (e.g. headless/SSH), the daemon falls back to UID-0
+checking.
+
+The GUI exposes a lock/unlock toolbar button. Clicking "Unlock" calls
+`RequestAuthorization` on the daemon, which triggers a polkit authentication
+dialog in the user's desktop session. After successful authentication, write
+controls are enabled. The authorization expires after ~5 minutes
+(`auth_admin_keep`), at which point controls silently grey out and the user
+can click "Unlock" again.
 
 ---
 
@@ -87,7 +98,7 @@ The daemon is the sole source of truth. Clients render what the daemon reports.
 | Asset | Owner | Location |
 |---|---|---|
 | Config file | Daemon | `$XDG_STATE_DIR/kde-fan-control/config.toml` |
-| Owned-fan set | Daemon | in-memory, persisted in config |
+| Owned-fan set | Daemon | in-memory + persisted to `/var/lib/kde-fan-control/owned-fans.json` |
 | Control tasks | Daemon | per-fan Tokio tasks |
 | Degraded-fan state | Daemon | in-memory + config |
 | Event log | Daemon | in-memory ring buffer |
@@ -389,4 +400,4 @@ them from the 100 ms telemetry churn.
 | GUI navigation | Some tray→main-window and popover integration stubs | Incomplete shell interaction |
 | FanDetailPage | Advanced tab values are hardcoded | Not reflecting live state |
 | Lifecycle events | Events refresh only on page load | Stale event list until user navigates away and back |
-| Authorization | UID-0 check instead of polkit | Desktop users must run CLI as root; GUI writes blocked for non-root |
+| Authorization | Polkit `org.kde.fancontrol.write-config` with UID-0 fallback | GUI lock/unlock button, `auth_admin_keep` session caching |

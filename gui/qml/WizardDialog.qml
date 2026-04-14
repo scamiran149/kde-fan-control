@@ -109,6 +109,21 @@ Kirigami.Dialog {
         draftLoaded = true
     }
 
+    function sensorSummaryText(sensorIds) {
+        var names = []
+        for (var s = 0; s < sensorIds.length; s++) {
+            var sensorId = sensorIds[s]
+            for (var i = 0; i < sensorListModel.rowCount(); i++) {
+                var idx = sensorListModel.index(i, 0)
+                if (sensorListModel.data(idx, SensorListModel.SensorIdRole) === sensorId) {
+                    names.push(sensorListModel.data(idx, SensorListModel.DisplayNameRole))
+                    break
+                }
+            }
+        }
+        return names.join(", ")
+    }
+
     // Helper to get available control modes for the selected fan
     function availableControlModes() {
         // Default to PWM; add voltage if fan supports it
@@ -339,52 +354,21 @@ Kirigami.Dialog {
                     color: Kirigami.Theme.disabledTextColor
                 }
 
-                ListView {
-                    id: sensorSelectionList
+                MultiSelectComboBox {
+                    id: sensorSelectionCombo
                     Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    Layout.minimumHeight: 150
-                    clip: true
-                    model: sensorListModel
-
-                    delegate: Kirigami.AbstractCard {
-                        width: sensorSelectionList.width
-
-                        contentItem: RowLayout {
-                            spacing: Kirigami.Units.mediumSpacing
-
-                            Controls.CheckBox {
-                                id: sensorCheck
-                                checked: selectedSensorIds.indexOf(model.sensorId) >= 0
-                                onToggled: {
-                                    var ids = selectedSensorIds.slice()
-                                    var idx = ids.indexOf(model.sensorId)
-                                    if (idx >= 0) {
-                                        ids.splice(idx, 1)
-                                    } else {
-                                        ids.push(model.sensorId)
-                                    }
-                                    selectedSensorIds = ids
-                                    console.log("KFC_GUI_DEBUG Wizard: sensor toggled sensorId=" + model.sensorId + " selectedSensorIds=" + JSON.stringify(ids))
-                                    draftModel.setSensorIdsViaDBus(ids)
-                                }
-                            }
-
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 0
-
-                                Controls.Label {
-                                    text: model.displayName
-                                    font.weight: Font.DemiBold
-                                }
-                                Controls.Label {
-                                    text: i18n("%1 °C — %2", (model.temperatureMillidegrees / 1000.0).toFixed(1), model.deviceName)
-                                    font: Kirigami.Theme.smallFont
-                                    color: Kirigami.Theme.disabledTextColor
-                                }
-                            }
-                        }
+                    Layout.maximumWidth: 600
+                    listModel: sensorListModel
+                    idRole: "sensorId"
+                    displayRole: "displayName"
+                    detailRole: "temperatureMillidegrees"
+                    detailFormatter: function(millideg) { return (millideg / 1000.0).toFixed(1) + " °C" }
+                    selectedIds: selectedSensorIds
+                    summaryText: wizardDialog.sensorSummaryText(selectedSensorIds)
+                    placeholderText: i18n("Select sensors…")
+                    onSelectionChanged: function(newIds) {
+                        selectedSensorIds = newIds
+                        draftModel.setSensorIdsViaDBus(newIds)
                     }
                 }
 

@@ -28,7 +28,7 @@
 
 - Root may own the bus name `org.kde.FanControl`.
 - All users may send messages to the destination.
-- Write methods restrict execution to UID 0 (see §6).
+- Write methods restrict execution via polkit (see §6).
 
 ### Type Conventions
 
@@ -50,10 +50,10 @@ All methods that return structured data return a JSON string (`s` in DBus type s
 | Method | Signature | Auth | Description |
 |---|---|---|---|
 | `Snapshot` | `→ s` | none | Returns full hardware inventory as a JSON string (see §5.1) |
-| `SetSensorName` | `(id: s, name: s) → ()` | root | Assign a friendly name to a temperature sensor |
-| `SetFanName` | `(id: s, name: s) → ()` | root | Assign a friendly name to a fan channel |
-| `RemoveSensorName` | `(id: s) → ()` | root | Remove a sensor's friendly name |
-| `RemoveFanName` | `(id: s) → ()` | root | Remove a fan's friendly name |
+| `SetSensorName` | `(id: s, name: s) → ()` | polkit | Assign a friendly name to a temperature sensor |
+| `SetFanName` | `(id: s, name: s) → ()` | polkit | Assign a friendly name to a fan channel |
+| `RemoveSensorName` | `(id: s) → ()` | polkit | Remove a sensor's friendly name |
+| `RemoveFanName` | `(id: s) → ()` | polkit | Remove a fan's friendly name |
 
 ### 2.2 Method Details
 
@@ -96,7 +96,7 @@ None.
 | Error Name | Condition |
 |---|---|
 | `org.kde.FanControl.Error.NotFound` | Referenced `id` does not exist in the current inventory |
-| `org.kde.FanControl.Error.NotPrivileged` | Write method called by non-root user |
+| `org.kde.FanControl.Error.NotPrivileged` | Write method called without polkit authorization (or UID-0 when polkit unavailable) |
 | `org.kde.FanControl.Error.InvalidArgument` | `name` is empty or exceeds 128 characters |
 
 ---
@@ -119,7 +119,7 @@ None.
 | `GetOverviewStructure` | `→ s` | none | Returns overview structure snapshot as JSON (§5.12) |
 | `GetOverviewTelemetry` | `→ s` | none | Returns overview telemetry batch as JSON (§5.13) |
 
-**Write methods (root auth required):**
+**Write methods (polkit auth required):**
 
 | Method | Signature | Auth | Description |
 |---|---|---|---|
@@ -127,7 +127,8 @@ None.
 | `RemoveDraftFan` | `(fan_id: s) → ()` | root | Remove a fan from the draft config |
 | `DiscardDraft` | `→ ()` | root | Clear the entire draft configuration |
 | `ValidateDraft` | `→ s` | root | Validate draft against live inventory; returns `ValidationResult` JSON (§5.5) |
-| `ApplyDraft` | `→ s` | root | Validate and promote draft to live; returns `ValidationResult` JSON (§5.5) |
+| `ApplyDraft` | `→ s` | polkit | Validate and promote draft to live; returns `ValidationResult` JSON (§5.5) |
+| `RequestAuthorization` | `→ ()` | polkit | Proactively check/obtain polkit authorization; triggers auth dialog if needed |
 
 ### 3.2 Method Details
 
@@ -220,7 +221,7 @@ Pre-formatted strings (`temperature_text`, `rpm_text`, `output_text`) avoid clie
 
 | Error Name | Condition |
 |---|---|
-| `org.kde.FanControl.Error.NotPrivileged` | Write method called by non-root user |
+| `org.kde.FanControl.Error.NotPrivileged` | Write method called without polkit authorization (or UID-0 when polkit unavailable) |
 | `org.kde.FanControl.Error.NotFound` | Referenced `fan_id` or `temp_id` does not exist |
 | `org.kde.FanControl.Error.DraftEmpty` | `ApplyDraft` called with an empty draft |
 | `org.kde.FanControl.Error.InvalidArgument` | `control_mode` is not valid for this fan, or `temp_sources` is empty when `managed` is true |
@@ -237,9 +238,9 @@ Pre-formatted strings (`temperature_text`, `rpm_text`, `output_text`) avoid clie
 |---|---|---|---|
 | `GetControlStatus` | `→ s` | none | Returns live control runtime status for all managed fans as JSON (§5.9) |
 | `GetAutoTuneResult` | `(fan_id: s) → s` | none | Returns auto-tune result for a specific fan as JSON (§5.10) |
-| `StartAutoTune` | `(fan_id: s) → ()` | root | Start bounded auto-tune observation for a fan |
-| `AcceptAutoTune` | `(fan_id: s) → s` | root | Accept the latest completed auto-tune proposal into draft config |
-| `SetDraftFanControlProfile` | `(fan_id: s, profile_json: s) → s` | root | Set control profile fields for a fan's draft entry |
+| `StartAutoTune` | `(fan_id: s) → ()` | polkit | Start bounded auto-tune observation for a fan |
+| `AcceptAutoTune` | `(fan_id: s) → s` | polkit | Accept the latest completed auto-tune proposal into draft config |
+| `SetDraftFanControlProfile` | `(fan_id: s, profile_json: s) → s` | polkit | Set control profile fields for a fan's draft entry |
 
 ### 4.2 Method Details
 
@@ -297,7 +298,7 @@ Pre-formatted strings (`temperature_text`, `rpm_text`, `output_text`) avoid clie
 
 | Error Name | Condition |
 |---|---|
-| `org.kde.FanControl.Error.NotPrivileged` | Write method called by non-root user |
+| `org.kde.FanControl.Error.NotPrivileged` | Write method called without polkit authorization (or UID-0 when polkit unavailable) |
 | `org.kde.FanControl.Error.NotFound` | Referenced `fan_id` does not exist in draft or inventory |
 | `org.kde.FanControl.Error.NotManaged` | Fan is not currently managed by the daemon |
 | `org.kde.FanControl.Error.Busy` | Another auto-tune is already running |
@@ -706,27 +707,39 @@ The `visual_state` field distinguishes `"managed_hot"` (managed fan with high-te
 
 ## 6. Authorization Model
 
-### Current (v1.0)
+### Current
 
-All write methods require the calling process's effective UID to be 0 (root). The daemon enforces this by calling `org.freedesktop.DBus.GetConnectionUnixUser` on the message sender and comparing the result to 0.
+All write methods require polkit authorization using the action ID
+`org.kde.fancontrol.write-config` with the implicit authorization mode
+`auth_admin_keep`. The daemon calls `org.freedesktop.PolicyKit1.Authority.CheckAuthorization()`
+with `AllowUserInteraction=1`, which triggers a graphical authentication dialog
+in the caller's desktop session.
 
-If the caller is not root, the daemon returns a DBus error with the name `org.kde.FanControl.Error.NotPrivileged`.
+If the polkit authority is unavailable (e.g. no polkit daemon running in a
+headless/SSH session), the daemon falls back to a UID-0 check: only root
+callers are authorized.
 
-### Planned (v1.1)
+The `RequestAuthorization` method on the Lifecycle interface allows the GUI
+to proactively trigger the polkit authentication dialog before performing any
+write operation. This enables the lock/unlock UX pattern.
 
-Polkit authorization using the action ID `org.kde.fancontrol.write-config` with the implicit authorization mode `auth_admin_keep`. This allows an active admin session to authorize once and retain the credential for a bounded duration.
+### Polkit Policy
 
-The daemon will check Polkit first; if the Polkit authority is unavailable (e.g. no Polkit daemon running), it falls back to the current UID-0 check.
+Installed at `/usr/share/polkit-1/actions/org.kde.fancontrol.policy`:
+
+| Action ID | `allow_any` | `allow_inactive` | `allow_active` |
+|---|---|---|---|
+| `org.kde.fancontrol.write-config` | `auth_admin` | `auth_admin` | `auth_admin_keep` |
 
 ### Auth Summary Per Method
 
 | Interface | Method | Auth |
 |---|---|---|
 | Inventory | `Snapshot` | none |
-| Inventory | `SetSensorName` | root |
-| Inventory | `SetFanName` | root |
-| Inventory | `RemoveSensorName` | root |
-| Inventory | `RemoveFanName` | root |
+| Inventory | `SetSensorName` | polkit |
+| Inventory | `SetFanName` | polkit |
+| Inventory | `RemoveSensorName` | polkit |
+| Inventory | `RemoveFanName` | polkit |
 | Lifecycle | `GetDraftConfig` | none |
 | Lifecycle | `GetAppliedConfig` | none |
 | Lifecycle | `GetDegradedSummary` | none |
@@ -734,16 +747,17 @@ The daemon will check Polkit first; if the Polkit authority is unavailable (e.g.
 | Lifecycle | `GetRuntimeState` | none |
 | Lifecycle | `GetOverviewStructure` | none |
 | Lifecycle | `GetOverviewTelemetry` | none |
-| Lifecycle | `SetDraftFanEnrollment` | root |
-| Lifecycle | `RemoveDraftFan` | root |
-| Lifecycle | `DiscardDraft` | root |
-| Lifecycle | `ValidateDraft` | root |
-| Lifecycle | `ApplyDraft` | root |
+| Lifecycle | `SetDraftFanEnrollment` | polkit |
+| Lifecycle | `RemoveDraftFan` | polkit |
+| Lifecycle | `DiscardDraft` | polkit |
+| Lifecycle | `ValidateDraft` | polkit |
+| Lifecycle | `ApplyDraft` | polkit |
+| Lifecycle | `RequestAuthorization` | polkit |
 | Control | `GetControlStatus` | none |
 | Control | `GetAutoTuneResult` | none |
-| Control | `StartAutoTune` | root |
-| Control | `AcceptAutoTune` | root |
-| Control | `SetDraftFanControlProfile` | root |
+| Control | `StartAutoTune` | polkit |
+| Control | `AcceptAutoTune` | polkit |
+| Control | `SetDraftFanControlProfile` | polkit |
 
 ---
 

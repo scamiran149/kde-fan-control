@@ -1,0 +1,13 @@
+Package: kde-fan-control-dbgsym
+Package-Type: ddeb
+Source: kde-fan-control
+Version: 1.0.0-1
+Auto-Built-Package: debug-symbols
+Architecture: amd64
+Maintainer: Samiran Amiran <sherwin@amiran.us>
+Installed-Size: 2921
+Depends: kde-fan-control (= 1.0.0-1)
+Section: debug
+Priority: optional
+Description: debug symbols for kde-fan-control
+Build-Ids: a378366d9d97a89a073d1d29364f49dc055869ab

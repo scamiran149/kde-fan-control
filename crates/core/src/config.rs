@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::env;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -11,6 +12,22 @@ use crate::inventory::{ControlMode, FanChannel, InventorySnapshot, SupportState}
 /// Current schema version for the daemon-owned configuration file.
 /// Increment when making backward-incompatible changes to the config format.
 pub const CONFIG_VERSION: u32 = 1;
+
+pub fn app_state_dir() -> PathBuf {
+    state_directory_from_env(env::var("STATE_DIRECTORY").ok()).unwrap_or_else(|| {
+        dirs::state_dir()
+            .or_else(dirs::data_local_dir)
+            .unwrap_or_else(|| PathBuf::from("/var/lib"))
+            .join("kde-fan-control")
+    })
+}
+
+fn state_directory_from_env(value: Option<String>) -> Option<PathBuf> {
+    value
+        .and_then(|raw| raw.split(':').next().map(str::trim).map(str::to_owned))
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+}
 
 /// Top-level daemon-owned configuration.
 ///
@@ -374,11 +391,7 @@ impl AppConfig {
 }
 
 fn config_path() -> PathBuf {
-    dirs::state_dir()
-        .or_else(dirs::data_local_dir)
-        .unwrap_or_else(|| PathBuf::from("/var/lib"))
-        .join("kde-fan-control")
-        .join("config.toml")
+    app_state_dir().join("config.toml")
 }
 
 // ---------------------------------------------------------------------------
@@ -1497,5 +1510,21 @@ version = 999
         let config: AppConfig =
             toml::from_str(phase2_toml).expect("minimal Phase 2 config should deserialize");
         assert!(config.applied.is_none());
+    }
+
+    #[test]
+    fn state_directory_env_uses_first_path() {
+        let path = state_directory_from_env(Some(
+            "/var/lib/kde-fan-control:/var/lib/ignored".to_string(),
+        ))
+        .expect("state directory env should resolve");
+
+        assert_eq!(path, PathBuf::from("/var/lib/kde-fan-control"));
+    }
+
+    #[test]
+    fn state_directory_env_ignores_empty_values() {
+        assert!(state_directory_from_env(Some("   ".to_string())).is_none());
+        assert!(state_directory_from_env(None).is_none());
     }
 }

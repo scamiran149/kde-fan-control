@@ -15,8 +15,20 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.kde.fancontrol
 
-Rectangle {
+Window {
     id: trayPopover
+
+    width: 360
+    height: trayPopoverContent.implicitHeight + Kirigami.Units.largeSpacing * 2
+    color: Kirigami.Theme.alternateBackgroundColor
+    flags: Qt.Popup | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+
+    readonly property int maxVisibleRows: 6
+    readonly property int rowHeight: 40
+
+    function showPopover() {
+        trayPopover.show()
+    }
 
     function countByState(stateName) {
         var count = 0
@@ -41,233 +53,223 @@ Rectangle {
         return count
     }
 
-    // Preferred width per UI-SPEC: 360px
-    width: 360
-    implicitHeight: mainLayout.implicitHeight + Kirigami.Units.largeSpacing * 2
-    height: implicitHeight
-    color: Kirigami.Theme.alternateBackgroundColor
-    radius: Kirigami.Units.smallSpacing
-
-    // Maximum visible fan rows before scrolling (UI-SPEC: 6)
-    readonly property int maxVisibleRows: 6
-    readonly property int rowHeight: 40
-
-    ColumnLayout {
-        id: mainLayout
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.margins: Kirigami.Units.mediumSpacing
-        spacing: Kirigami.Units.smallSpacing
-
-        // ================================================
-        // HEADER: daemon connection state, severity, counts
-        // ================================================
-
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: Kirigami.Units.mediumSpacing
-
-            // Daemon connection indicator
-            Rectangle {
-                width: Kirigami.Units.iconSizes.small
-                height: Kirigami.Units.iconSizes.small
-                radius: width / 2
-                color: {
-                    if (!trayIcon.daemonConnected) return Kirigami.Theme.negativeTextColor
-                    // Connected: green
-                    return Kirigami.Theme.positiveTextColor
-                }
-
-                Controls.ToolTip.visible: hovered
-                Controls.ToolTip.text: trayIcon.daemonConnected ? i18n("Connected") : i18n("Disconnected")
-                Controls.ToolTip.delay: Kirigami.Units.toolTipDelay
-
-                property bool hovered: ma.containsMouse
-                MouseArea {
-                    id: ma
-                    anchors.fill: parent
-                    hoverEnabled: true
-                }
-            }
-
-            Controls.Label {
-                text: trayIcon.daemonConnected ? i18n("Connected") : i18n("Disconnected")
-                color: trayIcon.daemonConnected ? Kirigami.Theme.positiveTextColor : Kirigami.Theme.negativeTextColor
-                font.weight: Font.DemiBold
-                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
-            }
-
-            Item { Layout.fillWidth: true }
-
-            // Worst severity icon
-            Kirigami.Icon {
-                source: {
-                    switch (trayIcon.worstSeverity) {
-                    case "fallback":    return "dialog-error-symbolic"
-                    case "degraded":    return "data-warning-symbolic"
-                    case "high-temp":   return "temperature-high-symbolic"
-                    case "managed":    return "emblem-ok-symbolic"
-                    case "unmanaged":  return "dialog-information-symbolic"
-                    default:            return "network-offline-symbolic"
-                    }
-                }
-                width: Kirigami.Units.iconSizes.small
-                height: Kirigami.Units.iconSizes.small
-            }
-
-            // Managed count
-            Controls.Label {
-                text: i18n("%1 managed", trayIcon.managedFanCount)
-                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
-                color: Kirigami.Theme.textColor
-            }
-
-            // Alert count
-            Controls.Label {
-                visible: trayIcon.alertCount > 0
-                text: i18n("%1 alerts", trayIcon.alertCount)
-                font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
-                color: Kirigami.Theme.negativeTextColor
-                font.weight: Font.DemiBold
-            }
+    onActiveFocusItemChanged: {
+        if (!trayPopover.activeFocusItem && trayPopover.visible) {
+            trayPopover.hide()
         }
+    }
 
-        // ================================================
-        // ALERT AREA: sticky alert summary per D-12
-        // ================================================
+    Rectangle {
+        id: trayPopoverContent
+        anchors.fill: parent
+        color: Kirigami.Theme.alternateBackgroundColor
+        radius: Kirigami.Units.smallSpacing
 
         ColumnLayout {
-            Layout.fillWidth: true
+            id: mainLayout
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: Kirigami.Units.mediumSpacing
             spacing: Kirigami.Units.smallSpacing
-            visible: trayIcon.hasStickyAlerts
 
-            // Fallback alert
-            Rectangle {
+            // ================================================
+            // HEADER: daemon connection state, severity, counts
+            // ================================================
+
+            RowLayout {
                 Layout.fillWidth: true
-                height: fallbackLabel.height + Kirigami.Units.smallSpacing * 2
-                color: Kirigami.Theme.negativeTextColor
-                opacity: 0.15
-                radius: Kirigami.Units.smallSpacing
-                visible: trayPopover.countByState("fallback") > 0
+                spacing: Kirigami.Units.mediumSpacing
+
+                Rectangle {
+                    width: Kirigami.Units.iconSizes.small
+                    height: Kirigami.Units.iconSizes.small
+                    radius: width / 2
+                    color: {
+                        if (!trayIcon.daemonConnected) return Kirigami.Theme.negativeTextColor
+                        return Kirigami.Theme.positiveTextColor
+                    }
+
+                    Controls.ToolTip.visible: hovered
+                    Controls.ToolTip.text: trayIcon.daemonConnected ? i18n("Connected") : i18n("Disconnected")
+                    Controls.ToolTip.delay: Kirigami.Units.toolTipDelay
+
+                    property bool hovered: ma.containsMouse
+                    MouseArea {
+                        id: ma
+                        anchors.fill: parent
+                        hoverEnabled: true
+                    }
+                }
 
                 Controls.Label {
-                    id: fallbackLabel
-                    anchors.centerIn: parent
-                    text: i18n("Fallback active — %1 fans driven to safe output", trayPopover.countByState("fallback"))
+                    text: trayIcon.daemonConnected ? i18n("Connected") : i18n("Disconnected")
+                    color: trayIcon.daemonConnected ? Kirigami.Theme.positiveTextColor : Kirigami.Theme.negativeTextColor
+                    font.weight: Font.DemiBold
+                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Kirigami.Icon {
+                    source: {
+                        switch (trayIcon.worstSeverity) {
+                        case "fallback":    return "dialog-error-symbolic"
+                        case "degraded":    return "data-warning-symbolic"
+                        case "high-temp":   return "temperature-high-symbolic"
+                        case "managed":    return "emblem-ok-symbolic"
+                        case "unmanaged":  return "dialog-information-symbolic"
+                        default:            return "network-offline-symbolic"
+                        }
+                    }
+                    width: Kirigami.Units.iconSizes.small
+                    height: Kirigami.Units.iconSizes.small
+                }
+
+                Controls.Label {
+                    text: i18n("%1 managed", trayIcon.managedFanCount)
+                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
+                    color: Kirigami.Theme.textColor
+                }
+
+                Controls.Label {
+                    visible: trayIcon.alertCount > 0
+                    text: i18n("%1 alerts", trayIcon.alertCount)
+                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
                     color: Kirigami.Theme.negativeTextColor
                     font.weight: Font.DemiBold
-                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
                 }
             }
 
-            // Degraded alert
-            Rectangle {
+            // ================================================
+            // ALERT AREA: sticky alert summary
+            // ================================================
+
+            ColumnLayout {
                 Layout.fillWidth: true
-                height: degradedLabel.height + Kirigami.Units.smallSpacing * 2
-                color: Kirigami.Theme.neutralTextColor
-                opacity: 0.15
-                radius: Kirigami.Units.smallSpacing
-                visible: trayPopover.countByState("degraded") > 0
-
-                Controls.Label {
-                    id: degradedLabel
-                    anchors.centerIn: parent
-                    text: i18n("Fan control degraded — %1 fans", trayPopover.countByState("degraded"))
-                    color: Kirigami.Theme.neutralTextColor
-                    font.weight: Font.DemiBold
-                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
-                }
-            }
-
-            // High-temp alert
-            Rectangle {
-                Layout.fillWidth: true
-                height: highTempLabel.height + Kirigami.Units.smallSpacing * 2
-                color: Kirigami.Theme.negativeTextColor
-                opacity: 0.12
-                radius: Kirigami.Units.smallSpacing
-                visible: trayPopover.countHighTempAlerts() > 0
-
-                Controls.Label {
-                    id: highTempLabel
-                    anchors.centerIn: parent
-                    text: i18n("High temperature — %1 fans above target", trayPopover.countHighTempAlerts())
-                    color: Kirigami.Theme.negativeTextColor
-                    font.weight: Font.DemiBold
-                    font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
-                }
-            }
-        }
-
-        // ================================================
-        // MANAGED FAN LIST per D-09
-        // ================================================
-
-        ListView {
-            id: fanListView
-            Layout.fillWidth: true
-            Layout.preferredHeight: Math.min(
-                fanListView.count * trayPopover.rowHeight,
-                trayPopover.maxVisibleRows * trayPopover.rowHeight
-            )
-            clip: true
-            spacing: 0
-
-            // Filter model to only show managed fans by default per D-09
-            model: overviewModel
-            delegate: FanTrayDelegate {
-                width: fanListView.width
-                fanId: rowObject ? rowObject.fanId : ""
-                displayName: rowObject ? rowObject.displayName : ""
-                fanState: rowObject ? rowObject.visualState : "unmanaged"
-                temperatureMillidegrees: rowObject ? rowObject.temperatureMillidegrees : 0
-                outputPercent: rowObject ? rowObject.outputPercent : 0.0
-                rpm: rowObject ? rowObject.rpm : 0
-                hasTach: rowObject ? rowObject.hasTach : false
-                highTempAlert: rowObject ? rowObject.highTempAlert : false
-
-                visible: fanState === "managed" ||
-                         fanState === "degraded" ||
-                         fanState === "fallback" ||
-                         fanState === "unmanaged"
-                height: visible ? trayPopover.rowHeight : 0
-
-                // Click opens main window and navigates to this fan's detail
-                onClicked: {
-                    trayIcon.activateMainWindow()
-                    // Navigate to fan detail page after activating window
-                    // The main window's pageStack is accessible via the application window
-                }
-            }
-        }
-
-        // ================================================
-        // FOOTER ACTIONS per UI-SPEC
-        // ================================================
-
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.topMargin: Kirigami.Units.smallSpacing
-            spacing: Kirigami.Units.mediumSpacing
-
-            Controls.Button {
-                text: i18n("Open Fan Control")
-                icon.name: "go-home"
-                Layout.fillWidth: true
-                onClicked: {
-                    trayIcon.activateMainWindow()
-                }
-            }
-
-            Controls.Button {
-                text: i18n("Acknowledge alerts")
-                icon.name: "dialog-ok-apply-symbolic"
+                spacing: Kirigami.Units.smallSpacing
                 visible: trayIcon.hasStickyAlerts
-                enabled: trayIcon.hasStickyAlerts
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: fallbackLabel.height + Kirigami.Units.smallSpacing * 2
+                    color: Kirigami.Theme.negativeTextColor
+                    opacity: 0.15
+                    radius: Kirigami.Units.smallSpacing
+                    visible: trayPopover.countByState("fallback") > 0
+
+                    Controls.Label {
+                        id: fallbackLabel
+                        anchors.centerIn: parent
+                        text: i18n("Fallback active — %1 fans driven to safe output", trayPopover.countByState("fallback"))
+                        color: Kirigami.Theme.negativeTextColor
+                        font.weight: Font.DemiBold
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
+                    }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: degradedLabel.height + Kirigami.Units.smallSpacing * 2
+                    color: Kirigami.Theme.neutralTextColor
+                    opacity: 0.15
+                    radius: Kirigami.Units.smallSpacing
+                    visible: trayPopover.countByState("degraded") > 0
+
+                    Controls.Label {
+                        id: degradedLabel
+                        anchors.centerIn: parent
+                        text: i18n("Fan control degraded — %1 fans", trayPopover.countByState("degraded"))
+                        color: Kirigami.Theme.neutralTextColor
+                        font.weight: Font.DemiBold
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
+                    }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    height: highTempLabel.height + Kirigami.Units.smallSpacing * 2
+                    color: Kirigami.Theme.negativeTextColor
+                    opacity: 0.12
+                    radius: Kirigami.Units.smallSpacing
+                    visible: trayPopover.countHighTempAlerts() > 0
+
+                    Controls.Label {
+                        id: highTempLabel
+                        anchors.centerIn: parent
+                        text: i18n("High temperature — %1 fans above target", trayPopover.countHighTempAlerts())
+                        color: Kirigami.Theme.negativeTextColor
+                        font.weight: Font.DemiBold
+                        font.pixelSize: Kirigami.Theme.defaultFont.pixelSize
+                    }
+                }
+            }
+
+            // ================================================
+            // MANAGED FAN LIST
+            // ================================================
+
+            ListView {
+                id: fanListView
                 Layout.fillWidth: true
-                onClicked: {
-                    trayIcon.acknowledgeAlerts()
+                Layout.preferredHeight: Math.min(
+                    fanListView.count * trayPopover.rowHeight,
+                    trayPopover.maxVisibleRows * trayPopover.rowHeight
+                )
+                clip: true
+                spacing: 0
+
+                model: overviewModel
+                delegate: FanTrayDelegate {
+                    width: fanListView.width
+                    fanId: rowObject ? rowObject.fanId : ""
+                    displayName: rowObject ? rowObject.displayName : ""
+                    fanState: rowObject ? rowObject.visualState : "unmanaged"
+                    temperatureMillidegrees: rowObject ? rowObject.temperatureMillidegrees : 0
+                    outputPercent: rowObject ? rowObject.outputPercent : 0.0
+                    rpm: rowObject ? rowObject.rpm : 0
+                    hasTach: rowObject ? rowObject.hasTach : false
+                    highTempAlert: rowObject ? rowObject.highTempAlert : false
+
+                    visible: fanState === "managed" ||
+                             fanState === "degraded" ||
+                             fanState === "fallback" ||
+                             fanState === "unmanaged"
+                    height: visible ? trayPopover.rowHeight : 0
+
+                    onClicked: {
+                        trayIcon.activateMainWindow()
+                    }
+                }
+            }
+
+            // ================================================
+            // FOOTER ACTIONS
+            // ================================================
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: Kirigami.Units.smallSpacing
+                spacing: Kirigami.Units.mediumSpacing
+
+                Controls.Button {
+                    text: i18n("Open Fan Control")
+                    icon.name: "go-home"
+                    Layout.fillWidth: true
+                    onClicked: {
+                        trayIcon.activateMainWindow()
+                    }
+                }
+
+                Controls.Button {
+                    text: i18n("Acknowledge alerts")
+                    icon.name: "dialog-ok-apply-symbolic"
+                    visible: trayIcon.hasStickyAlerts
+                    enabled: trayIcon.hasStickyAlerts
+                    Layout.fillWidth: true
+                    onClicked: {
+                        trayIcon.acknowledgeAlerts()
+                    }
                 }
             }
         }

@@ -10,7 +10,7 @@ use std::time::Instant;
 use clap::Parser;
 use kde_fan_control_core::config::{
     AppConfig, AppliedFanEntry, DegradedReason, DegradedState, DraftFanEntry, LifecycleEvent,
-    LifecycleEventLog, apply_draft, validate_draft,
+    LifecycleEventLog, app_state_dir, apply_draft, validate_draft,
 };
 use kde_fan_control_core::control::{
     ActuatorPolicy, AggregationFn, AutoTuneProposal, ControlCadence, PidController, PidGains,
@@ -18,7 +18,7 @@ use kde_fan_control_core::control::{
 };
 use kde_fan_control_core::inventory::{ControlMode, InventorySnapshot, discover, discover_from};
 use kde_fan_control_core::lifecycle::{
-    ControlRuntimeSnapshot, FanRuntimeStatus, FallbackResult, OwnedFanSet, RuntimeState,
+    ControlRuntimeSnapshot, FallbackResult, FanRuntimeStatus, OwnedFanSet, RuntimeState,
     lifecycle_event_from_fallback_incident, perform_boot_reconciliation, write_fallback_for_owned,
 };
 use kde_fan_control_core::overview::{OverviewStructureSnapshot, OverviewTelemetryBatch};
@@ -32,10 +32,49 @@ use tracing_subscriber::EnvFilter;
 use zbus::fdo;
 use zbus::{connection::Builder, interface, object_server::SignalEmitter};
 
+use sd_notify::NotifyState;
+
 const BUS_NAME: &str = "org.kde.FanControl";
 const BUS_PATH_INVENTORY: &str = "/org/kde/FanControl";
 const BUS_PATH_LIFECYCLE: &str = "/org/kde/FanControl/Lifecycle";
 const BUS_PATH_CONTROL: &str = "/org/kde/FanControl/Control";
+
+fn state_dir() -> PathBuf {
+    app_state_dir()
+}
+
+fn owned_fans_path() -> PathBuf {
+    state_dir().join("owned-fans.json")
+}
+
+fn persist_owned_fans(owned: &OwnedFanSet) {
+    let path = owned_fans_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let fans: Vec<serde_json::Value> = owned
+        .owned_fan_ids()
+        .filter_map(|fan_id| {
+            owned.sysfs_path(fan_id).map(|p| {
+                serde_json::json!({
+                    "fan_id": fan_id,
+                    "sysfs_path": p,
+                })
+            })
+        })
+        .collect();
+    let doc = serde_json::json!({ "fans": fans });
+    match serde_json::to_string_pretty(&doc) {
+        Ok(json) => {
+            if let Err(e) = fs::write(&path, json) {
+                tracing::warn!(path = %path.display(), error = %e, "failed to persist owned-fans list");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to serialize owned-fans list");
+        }
+    }
+}
 
 #[derive(Debug)]
 struct ControlTaskHandle {
@@ -246,8 +285,7 @@ impl ControlSupervisor {
                 .await
                 .insert(fan_id.clone(), initial.clone());
 
-            let local: Arc<StdMutex<ControlRuntimeSnapshot>> =
-                Arc::new(StdMutex::new(initial));
+            let local: Arc<StdMutex<ControlRuntimeSnapshot>> = Arc::new(StdMutex::new(initial));
             self.inner
                 .fan_locals
                 .write()
@@ -315,8 +353,9 @@ impl ControlSupervisor {
         );
 
         for (fan_id, control) in live_status {
-            if let Some(FanRuntimeStatus::Managed { control: existing, .. }) =
-                state.fan_statuses.get_mut(&fan_id)
+            if let Some(FanRuntimeStatus::Managed {
+                control: existing, ..
+            }) = state.fan_statuses.get_mut(&fan_id)
             {
                 *existing = control;
             }
@@ -485,9 +524,9 @@ impl ControlSupervisor {
             });
         }
 
-        let snapshot_to_publish = locals.get(fan_id).and_then(|local| {
-            local.lock().ok().map(|guard| guard.clone())
-        });
+        let snapshot_to_publish = locals
+            .get(fan_id)
+            .and_then(|local| local.lock().ok().map(|guard| guard.clone()));
         drop(locals);
 
         if let Some(snapshot) = snapshot_to_publish {
@@ -818,7 +857,12 @@ impl ControlSupervisor {
             let snapshot = self.inner.snapshot.read().await;
             resolve_temp_sources(&snapshot, &entry.temp_sources)
         };
-        Self::read_temperature_sources(fan_id, &resolved_sources, &entry.temp_sources, &entry.aggregation)
+        Self::read_temperature_sources(
+            fan_id,
+            &resolved_sources,
+            &entry.temp_sources,
+            &entry.aggregation,
+        )
     }
 
     fn sample_temperatures_cached(
@@ -855,12 +899,12 @@ impl ControlSupervisor {
             }
         }
 
-        aggregation
-            .compute_millidegrees(&readings)
-            .ok_or_else(|| DegradedReason::TempSourceMissing {
+        aggregation.compute_millidegrees(&readings).ok_or_else(|| {
+            DegradedReason::TempSourceMissing {
                 fan_id: fan_id.to_string(),
                 temp_id: first_missing,
-            })
+            }
+        })
     }
 
     async fn clear_status(&self, fan_id: &str) {
@@ -889,6 +933,10 @@ impl ControlSupervisor {
 
         self.inner.owned.write().await.release_fan(fan_id);
         self.sync_panic_fallback_mirror().await;
+        {
+            let owned = self.inner.owned.read().await;
+            persist_owned_fans(&owned);
+        }
 
         let degraded_reason = DegradedReason::FanNoLongerEnrollable {
             fan_id: fan_id.to_string(),
@@ -996,9 +1044,7 @@ fn resolve_fan_rpm_path(snapshot: &InventorySnapshot, fan_id: &str) -> Option<Pa
             .fans
             .iter()
             .find(|fan| fan.id == fan_id && fan.rpm_feedback)
-            .map(|fan| {
-                PathBuf::from(&device.sysfs_path).join(format!("fan{}_input", fan.channel))
-            })
+            .map(|fan| PathBuf::from(&device.sysfs_path).join(format!("fan{}_input", fan.channel)))
     })
 }
 
@@ -1039,9 +1085,10 @@ struct DaemonArgs {
 // ---------------------------------------------------------------------------
 
 /// Check whether the caller of a DBus method is authorized for privileged
-/// operations. The current policy requires UID 0 (root). This function is
-/// explicitly structured so that a future `polkit` check can replace the
-/// UID comparison without changing the DBus method contract.
+/// operations. Tries polkit CheckAuthorization first; falls back to UID 0
+/// if the polkit authority is unavailable.
+const POLKIT_ACTION_ID: &str = "org.kde.fancontrol.write-config";
+
 async fn require_authorized(
     connection: &zbus::Connection,
     header: &zbus::message::Header<'_>,
@@ -1058,18 +1105,85 @@ async fn require_authorized(
 
     let bus_name = zbus::names::BusName::Unique(sender.clone());
     let uid: u32 = dbus_proxy
-        .get_connection_unix_user(bus_name)
+        .get_connection_unix_user(bus_name.clone())
         .await
         .map_err(|e| fdo::Error::AccessDenied(format!("could not resolve caller identity: {e}")))?;
 
-    if uid != 0 {
-        tracing::warn!(caller_uid = uid, "unauthorized write attempt");
-        return Err(fdo::Error::AccessDenied(
-            "privileged operations require root access".into(),
-        ));
-    }
+    let pid: u32 = dbus_proxy
+        .get_connection_unix_process_id(bus_name)
+        .await
+        .unwrap_or(0);
 
-    Ok(())
+    match check_polkit_authorization(connection, uid, pid).await {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            tracing::warn!(caller_uid = uid, "polkit authorization denied");
+            Err(fdo::Error::AccessDenied("authentication required".into()))
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, caller_uid = uid, "polkit unavailable, falling back to UID-0 check");
+            if uid != 0 {
+                tracing::warn!(caller_uid = uid, "unauthorized write attempt (no polkit)");
+                return Err(fdo::Error::AccessDenied(
+                    "privileged operations require root access (polkit unavailable)".into(),
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+async fn check_polkit_authorization(
+    _connection: &zbus::Connection,
+    uid: u32,
+    pid: u32,
+) -> Result<bool, String> {
+    use std::collections::HashMap;
+    use zbus::zvariant::Value;
+
+    // Polkit lives on the system bus. The daemon may be running on the
+    // session bus (dev mode), so always open a system-bus connection
+    // for the polkit call rather than reusing the daemon's connection.
+    let system_bus = zbus::connection::Builder::system()
+        .map_err(|e| format!("system bus builder failed: {e}"))?
+        .build()
+        .await
+        .map_err(|e| format!("system bus connection failed: {e}"))?;
+
+    let subject_dict: HashMap<&str, Value<'_>> = {
+        let mut m = HashMap::new();
+        m.insert("pid", Value::from(pid));
+        m.insert("uid", Value::from(uid));
+        m.insert("start-time", Value::from(0u64));
+        m
+    };
+
+    let reply = system_bus
+        .call_method(
+            Some("org.freedesktop.PolicyKit1"),
+            "/org/freedesktop/PolicyKit1/Authority",
+            Some("org.freedesktop.PolicyKit1.Authority"),
+            "CheckAuthorization",
+            &(
+                ("unix-process", subject_dict),
+                POLKIT_ACTION_ID,
+                HashMap::<&str, &str>::new(),
+                1u32,
+                "",
+            ),
+        )
+        .await
+        .map_err(|e| format!("CheckAuthorization call failed: {e}"))?;
+
+    let body = reply.body();
+    let result: (bool, bool, HashMap<String, String>) = body
+        .deserialize()
+        .map_err(|e| format!("CheckAuthorization deserialize failed: {e}"))?;
+
+    if result.0 {
+        tracing::debug!(caller_uid = uid, "polkit authorized");
+    }
+    Ok(result.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -1251,7 +1365,15 @@ fn write_fallback_from_panic_mirror(
 ) -> (Vec<String>, Vec<(String, String)>) {
     let paths = match mirror.owned_pwm_paths.read() {
         Ok(guard) => guard.clone(),
-        Err(_) => return (Vec::new(), vec![("mirror".to_string(), "poisoned panic fallback mirror".to_string())]),
+        Err(_) => {
+            return (
+                Vec::new(),
+                vec![(
+                    "mirror".to_string(),
+                    "poisoned panic fallback mirror".to_string(),
+                )],
+            );
+        }
     };
 
     let mut succeeded = Vec::new();
@@ -1509,6 +1631,18 @@ impl LifecycleIface {
             .map_err(|e| fdo::Error::Failed(format!("runtime state serialization error: {e}")))
     }
 
+    /// Proactively check whether the caller is authorized for privileged
+    /// operations. This triggers a polkit authentication dialog if the
+    /// caller is not yet authorized, allowing the GUI to present an
+    /// "Unlock" button that obtains credentials before performing writes.
+    async fn request_authorization(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> fdo::Result<()> {
+        require_authorized(connection, &header).await
+    }
+
     // -------------------------------------------------------------------
     // Write methods (require privileged authorization)
     // -------------------------------------------------------------------
@@ -1640,7 +1774,11 @@ impl LifecycleIface {
             let (draft, snapshot, previous_applied) = {
                 let config = self.config.read().await;
                 let snapshot = self.snapshot.read().await;
-                (config.draft.clone(), snapshot.clone(), config.applied.clone())
+                (
+                    config.draft.clone(),
+                    snapshot.clone(),
+                    config.applied.clone(),
+                )
             };
             let timestamp = format_iso8601_now();
             apply_draft(&draft, &snapshot, timestamp, previous_applied.as_ref())
@@ -1703,7 +1841,8 @@ impl LifecycleIface {
         {
             let snapshot = self.snapshot.read().await;
             let mut owned = self.owned.write().await;
-            let next_owned: std::collections::HashSet<_> = result.enrollable.iter().cloned().collect();
+            let next_owned: std::collections::HashSet<_> =
+                result.enrollable.iter().cloned().collect();
             let release_failures = release_removed_owned_fans(&mut owned, &next_owned);
             if !release_failures.is_empty() {
                 had_rejections = true;
@@ -1751,6 +1890,7 @@ impl LifecycleIface {
             }
 
             sync_panic_fallback_mirror_from_owned(&self.control.panic_fallback_mirror(), &owned);
+            persist_owned_fans(&owned);
         }
 
         self.control.reconcile().await;
@@ -2099,7 +2239,10 @@ fn install_panic_fallback_hook(
 
         let (succeeded, failed) = write_fallback_from_panic_mirror(&panic_mirror);
         if !succeeded.is_empty() {
-            eprintln!("panic fallback wrote safe maximum for fans: {:?}", succeeded);
+            eprintln!(
+                "panic fallback wrote safe maximum for fans: {:?}",
+                succeeded
+            );
         }
         if !failed.is_empty() {
             eprintln!("panic fallback failed for fans: {:?}", failed);
@@ -2291,6 +2434,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     control.reconcile().await;
 
+    {
+        let owned_guard = owned.read().await;
+        if !owned_guard.is_empty() {
+            persist_owned_fans(&owned_guard);
+        }
+    }
+
     let inventory_iface = InventoryIface {
         snapshot: Arc::clone(&snapshot),
         config: Arc::clone(&config),
@@ -2331,6 +2481,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         name = BUS_NAME,
         "D-Bus inventory and lifecycle surfaces ready"
     );
+
+    let _ = sd_notify::notify(&[NotifyState::Ready]);
+
+    tokio::spawn(async move {
+        let mut tick = interval(Duration::from_secs(20));
+        tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            let _ = sd_notify::notify(&[NotifyState::Watchdog]);
+        }
+    });
 
     let rpm_snapshot = Arc::clone(&snapshot);
     tokio::spawn(async move {
@@ -2379,6 +2540,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wait for shutdown signal, stop control loops, then drive fallback for
     // any remaining owned fans.
     wait_for_shutdown_signal().await?;
+    let _ = sd_notify::notify(&[NotifyState::Stopping]);
     tracing::info!("shutting down — driving owned fans to safe maximum");
 
     control.stop_all().await;

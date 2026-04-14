@@ -7,8 +7,8 @@
  * over the system bus. All daemon methods return JSON strings which
  * the GUI parses into structured data via the model layer.
  *
- * Write methods require root (UID 0) per the daemon's authorization
- * policy — see org.kde.FanControl.conf.
+ * Write methods require polkit authorization (or UID-0 fallback) per
+ * the daemon's authorization policy — see org.kde.fancontrol.policy.
  */
 
 #ifndef DAEMON_INTERFACE_H
@@ -24,7 +24,7 @@ class DaemonInterface : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(bool connected READ connected NOTIFY connectedChanged)
-    Q_PROPERTY(bool canWrite READ canWrite CONSTANT)
+    Q_PROPERTY(bool canWrite READ canWrite NOTIFY canWriteChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
 
 public:
@@ -33,6 +33,11 @@ public:
     bool connected() const { return m_connected; }
     bool canWrite() const;
     QString lastError() const { return m_lastError; }
+
+    // --- Auth methods ---
+
+    Q_INVOKABLE void requestAuthorization();
+    Q_INVOKABLE void dropAuthorization();
 
     // --- Read methods (JSON string responses) ---
 
@@ -69,6 +74,7 @@ public:
 
 signals:
     void connectedChanged();
+    void canWriteChanged();
     void lastErrorChanged();
 
     // Emitted when async read results arrive.
@@ -118,6 +124,7 @@ private:
     static constexpr const char *s_controlIface = "org.kde.FanControl.Control";
 
     bool m_connected = false;
+    bool m_canWrite = false;
     QString m_lastError;
 
     QDBusInterface m_inventoryIface;

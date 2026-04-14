@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(kde-fan-control-gui VERSION 0.1.0 LANGUAGES CXX)
+project(kde-fan-control-gui VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -33,6 +33,8 @@ find_package(KF6I18n REQUIRED)
 
 qt_add_executable(gui_app src/main.cpp)
 
+set_target_properties(gui_app PROPERTIES OUTPUT_NAME kde-fan-control-gui)
+
 qt_add_qml_module(gui_app
     URI org.kde.fancontrol
     VERSION 1.0
@@ -50,6 +52,7 @@ qt_add_qml_module(gui_app
         qml/components/TemperatureDisplay.qml
         qml/components/PidField.qml
         qml/components/RenameDialog.qml
+        qml/components/MultiSelectComboBox.qml
     NO_CACHEGEN
     SOURCES
         src/daemon_interface.h
@@ -105,6 +108,34 @@ endif()
 # KNotification looks for .notifyrc files in the data directory
 install(FILES data/kdefancontrol.notifyrc
     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/knotifications6
+)
+
+# Install the desktop entry file
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/org.kde.fancontrol.desktop
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications
+)
+
+# Install the application icons to the hicolor icon theme
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/icons/hicolor/scalable/apps/kde-fan-control.svg
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps
+)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/icons/hicolor/48x48/apps/kde-fan-control.png
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/48x48/apps
+)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/icons/hicolor/128x128/apps/kde-fan-control.png
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/128x128/apps
+)
+
+# Install the AppStream metadata
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/org.kde.fancontrol.metainfo.xml
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/metainfo
+)
+
+# Install the QML module descriptor so the engine can resolve types
+# when the binary is launched from outside the build tree.
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/org/kde/fancontrol/qmldir
+              ${CMAKE_CURRENT_BINARY_DIR}/org/kde/fancontrol/gui_app.qmltypes
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/qt6/qml/org/kde/fancontrol
 )
 
 install(TARGETS gui_app

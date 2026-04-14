@@ -102,6 +102,8 @@ enum Command {
         #[command(subcommand)]
         command: AutoTuneCommand,
     },
+    /// Check authorization for privileged operations. Triggers polkit auth if available.
+    Auth,
 }
 
 #[derive(Subcommand)]
@@ -200,6 +202,7 @@ trait LifecycleProxy {
     fn discard_draft(&self) -> zbus::Result<()>;
     fn validate_draft(&self) -> zbus::Result<String>;
     fn apply_draft(&self) -> zbus::Result<String>;
+    fn request_authorization(&self) -> zbus::Result<()>;
 }
 
 #[proxy(
@@ -459,6 +462,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  Run 'apply' to make the staged gains live.");
             }
         },
+        Command::Auth => {
+            run_async(async {
+                let proxy = connect_lifecycle_proxy().await?;
+                proxy.request_authorization().await?;
+                Ok(())
+            })?;
+            println!("✓ Authorization granted. You may now perform privileged operations.");
+        }
     }
 
     Ok(())
@@ -471,10 +482,15 @@ where
     let rt = tokio::runtime::Runtime::new()?;
     Ok(rt.block_on(future).map_err(|e| {
         let msg = format!("{}", e);
-        if msg.contains("AccessDenied") || msg.contains("Access denied") || msg.contains("privileged") || msg.contains("root") {
+        if msg.contains("AccessDenied")
+            || msg.contains("Access denied")
+            || msg.contains("privileged")
+            || msg.contains("authentication required")
+            || msg.contains("root")
+        {
             Box::new(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
-                "Access denied: lifecycle changes require root privileges. Run with sudo or as root.",
+                "Access denied: authentication required. Run with sudo or authenticate via polkit.",
             )) as Box<dyn std::error::Error>
         } else {
             Box::new(e) as Box<dyn std::error::Error>

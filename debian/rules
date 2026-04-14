@@ -1,0 +1,73 @@
+#!/usr/bin/make -f
+
+export DEB_HOST_MULTIARCH ?= $(shell dpkg-architecture -qDEB_HOST_MULTIARCH)
+export PATH := $(HOME)/.cargo/bin:$(PATH)
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	cargo vendor $(CURDIR)/debian/cargo-vendor
+	mkdir -p $(CURDIR)/.cargo
+	cargo vendor $(CURDIR)/debian/cargo-vendor > $(CURDIR)/.cargo/config.toml
+
+override_dh_auto_build:
+	cargo build --release -p kde-fan-control-daemon -p kde-fan-control-cli -p kde-fan-control-fallback
+	cmake -B gui/build -S gui
+	cmake --build gui/build
+
+override_dh_auto_install:
+	dh_auto_install
+
+	install -Dm755 target/release/kde-fan-control-daemon \
+		$(CURDIR)/debian/kde-fan-control/usr/libexec/kde-fan-control-daemon
+	install -Dm755 target/release/kde-fan-control-fallback \
+		$(CURDIR)/debian/kde-fan-control/usr/libexec/kde-fan-control-fallback
+	install -Dm755 target/release/kde-fan-control-cli \
+		$(CURDIR)/debian/kde-fan-control/usr/bin/kde-fan-control
+	install -Dm755 gui/build/gui_app \
+		$(CURDIR)/debian/kde-fan-control/usr/bin/kde-fan-control-gui
+
+	install -Dm644 gui/build/org/kde/fancontrol/qmldir \
+		$(CURDIR)/debian/kde-fan-control/usr/lib/$(DEB_HOST_MULTIARCH)/qt6/qml/org/kde/fancontrol/qmldir
+	install -Dm644 gui/build/org/kde/fancontrol/gui_app.qmltypes \
+		$(CURDIR)/debian/kde-fan-control/usr/lib/$(DEB_HOST_MULTIARCH)/qt6/qml/org/kde/fancontrol/gui_app.qmltypes
+
+	install -Dm644 packaging/dbus/org.kde.FanControl.conf \
+		$(CURDIR)/debian/kde-fan-control/usr/share/dbus-1/system.d/org.kde.FanControl.conf
+	install -Dm644 packaging/dbus/org.kde.FanControl.service \
+		$(CURDIR)/debian/kde-fan-control/usr/share/dbus-1/system-services/org.kde.FanControl.service
+	install -Dm644 packaging/polkit/org.kde.fancontrol.policy \
+		$(CURDIR)/debian/kde-fan-control/usr/share/polkit-1/actions/org.kde.fancontrol.policy
+	install -Dm644 packaging/systemd/kde-fan-control-daemon.service \
+		$(CURDIR)/debian/kde-fan-control/usr/lib/systemd/system/kde-fan-control-daemon.service
+	install -Dm644 packaging/org.kde.fancontrol.desktop \
+		$(CURDIR)/debian/kde-fan-control/usr/share/applications/org.kde.fancontrol.desktop
+
+	install -Dm644 packaging/icons/hicolor/scalable/apps/kde-fan-control.svg \
+		$(CURDIR)/debian/kde-fan-control/usr/share/icons/hicolor/scalable/apps/kde-fan-control.svg
+	install -Dm644 packaging/icons/hicolor/48x48/apps/kde-fan-control.png \
+		$(CURDIR)/debian/kde-fan-control/usr/share/icons/hicolor/48x48/apps/kde-fan-control.png
+	install -Dm644 packaging/icons/hicolor/128x128/apps/kde-fan-control.png \
+		$(CURDIR)/debian/kde-fan-control/usr/share/icons/hicolor/128x128/apps/kde-fan-control.png
+
+	install -Dm644 packaging/org.kde.fancontrol.metainfo.xml \
+		$(CURDIR)/debian/kde-fan-control/usr/share/metainfo/org.kde.fancontrol.metainfo.xml
+	install -Dm644 gui/data/kdefancontrol.notifyrc \
+		$(CURDIR)/debian/kde-fan-control/usr/share/knotifications6/kdefancontrol.notifyrc
+
+	install -Dm644 packaging/man/kde-fan-control.1 \
+		$(CURDIR)/debian/kde-fan-control/usr/share/man/man1/kde-fan-control.1
+	install -Dm644 packaging/man/kde-fan-control-gui.1 \
+		$(CURDIR)/debian/kde-fan-control/usr/share/man/man1/kde-fan-control-gui.1
+	install -Dm644 packaging/man/kde-fan-control-daemon.8 \
+		$(CURDIR)/debian/kde-fan-control/usr/share/man/man8/kde-fan-control-daemon.8
+
+override_dh_auto_test:
+	cargo test --release
+
+override_dh_auto_clean:
+	cargo clean
+	rm -rf gui/build
+	rm -rf debian/cargo-vendor
+	rm -rf .cargo

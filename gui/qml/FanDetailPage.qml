@@ -73,38 +73,6 @@ Kirigami.Page {
         }
     }
 
-    // --- Helper for sensor multi-select ---
-
-    // Available sensor IDs from sensorListModel
-    function availableSensorIds() {
-        var ids = []
-        for (var i = 0; i < sensorListModel.rowCount(); i++) {
-            var idx = sensorListModel.index(i, 0)
-            ids.push(sensorListModel.data(idx, SensorListModel.SensorIdRole))
-        }
-        return ids
-    }
-
-    function isSensorSelected(sensorId) {
-        return draftModel.sensorIds.indexOf(sensorId) >= 0
-    }
-
-    function toggleSensor(sensorId) {
-        var current = draftModel.sensorIds.slice()
-        var idx = current.indexOf(sensorId)
-        if (idx >= 0) {
-            current.splice(idx, 1)
-        } else {
-            current.push(sensorId)
-        }
-        draftModel.setSensorIdsViaDBus(current)
-    }
-
-    // --- Helper for temperature display ---
-    function millidegToCelsius(millideg) {
-        return (millideg / 1000.0).toFixed(1)
-    }
-
     function refreshFanSnapshotFromModel() {
         if (fanId === "") {
             return
@@ -127,6 +95,21 @@ Kirigami.Page {
         fanHasTach = snapshot.hasTach
         fanSupportReason = snapshot.supportReason
         fanHighTempAlert = snapshot.highTempAlert
+    }
+
+    function sensorSummaryText(sensorIds) {
+        var names = []
+        for (var s = 0; s < sensorIds.length; s++) {
+            var sensorId = sensorIds[s]
+            for (var i = 0; i < sensorListModel.rowCount(); i++) {
+                var idx = sensorListModel.index(i, 0)
+                if (sensorListModel.data(idx, SensorListModel.SensorIdRole) === sensorId) {
+                    names.push(sensorListModel.data(idx, SensorListModel.DisplayNameRole))
+                    break
+                }
+            }
+        }
+        return names.join(", ")
     }
 
     // --- Auto-tune failure text ---
@@ -225,7 +208,7 @@ Kirigami.Page {
         Kirigami.InlineMessage {
             Layout.fillWidth: true
             type: Kirigami.MessageType.Information
-            text: i18n("This session is read-only. Run the GUI as root to edit draft settings, validate, or apply changes.")
+            text: i18n("This session is read-only. Click Unlock in the menu to authorize changes.")
             visible: statusMonitor.daemonConnected && !daemonInterface.canWrite
             showCloseButton: true
         }
@@ -378,21 +361,21 @@ Kirigami.Page {
                 enabled: draftModel.enrolled && daemonInterface.canWrite
             }
 
-            // 3. Temperature source selector (multi-select)
-            ColumnLayout {
+            // 3. Temperature source selector (multi-select dropdown)
+            MultiSelectComboBox {
                 Kirigami.FormData.label: i18n("Temperature sources")
                 Layout.fillWidth: true
-                spacing: Kirigami.Units.smallSpacing
-
-                Repeater {
-                    model: sensorListModel
-
-                    Controls.CheckBox {
-                        text: model.displayName + " (" + millidegToCelsius(model.temperatureMillidegrees) + " °C)"
-                        checked: isSensorSelected(model.sensorId)
-                        onToggled: toggleSensor(model.sensorId)
-                        enabled: draftModel.enrolled && daemonInterface.canWrite
-                    }
+                listModel: sensorListModel
+                idRole: "sensorId"
+                displayRole: "displayName"
+                detailRole: "temperatureMillidegrees"
+                detailFormatter: function(millideg) { return (millideg / 1000.0).toFixed(1) + " °C" }
+                selectedIds: draftModel.sensorIds
+                summaryText: fanDetailPage.sensorSummaryText(draftModel.sensorIds)
+                enabled: draftModel.enrolled && daemonInterface.canWrite
+                placeholderText: i18n("Select sensors…")
+                onSelectionChanged: function(newIds) {
+                    draftModel.setSensorIdsViaDBus(newIds)
                 }
             }
 

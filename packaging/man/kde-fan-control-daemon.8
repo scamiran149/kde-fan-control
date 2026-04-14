@@ -1,0 +1,60 @@
+.TH KDE-FAN-CONTROL-DAEMON 8 "2026-04-13" "kde-fan-control 1.0.0" "System Daemon"
+.SH NAME
+kde-fan-control-daemon \- privileged fan control daemon for KDE Fan Control
+.SH SYNOPSIS
+.B kde-fan-control-daemon
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B kde-fan-control-daemon
+is the root-privileged system daemon that manages per-fan PID
+control using Linux hwmon sysfs interfaces. It exposes three
+DBus interfaces on the system bus:
+.IP \(bu 4
+.B org.kde.FanControl.Inventory
+\(em hardware discovery and naming
+.IP \(bu 4
+.B org.kde.FanControl.Lifecycle
+\(em draft/applied configuration management
+.IP \(bu 4
+.B org.kde.FanControl.Control
+\(em runtime control state and auto-tune
+.PP
+The daemon is designed to run as a systemd service
+(\fBType=notify\fR) and sends readiness and watchdog
+notifications. On exit or crash, the fallback helper
+(\fBkde-fan-control-fallback\fR) drives all owned fans to
+PWM 255 (maximum speed) as a safety measure.
+.SH OPTIONS
+.TP
+.BR \-\-root " " \fIPATH\fR
+Override the sysfs root path (default: \fI/sys\fR).
+Used for testing with fake sysfs trees.
+.TP
+.B \-\-session-bus
+Connect to the session bus instead of the system bus.
+For development only; production use targets the system bus.
+.SH SIGNALS
+The daemon handles SIGTERM for graceful shutdown and
+SIGINT for interactive termination. On either signal,
+the fallback helper runs to ensure fans are driven to
+safe maximum output.
+.SH FILES
+.TP
+.I /var/lib/kde-fan-control/config.toml
+Daemon-owned persistent configuration.
+.TP
+.I /usr/share/dbus-1/system.d/org.kde.FanControl.conf
+DBus system bus policy.
+.TP
+.I /usr/share/dbus-1/system-services/org.kde.FanControl.service
+DBus system bus activation.
+.TP
+.I /usr/share/polkit-1/actions/org.kde.fancontrol.policy
+Polkit authorization policy.
+.TP
+.I /usr/lib/systemd/system/kde-fan-control-daemon.service
+Systemd service unit.
+.SH SEE ALSO
+.BR kde-fan-control (1),
+.BR kde-fan-control-gui (1),
+.BR systemd.service (5)
