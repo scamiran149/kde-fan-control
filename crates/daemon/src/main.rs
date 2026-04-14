@@ -413,6 +413,7 @@ impl ControlSupervisor {
             tick.tick().await;
             self.publish_status_batch().await;
             self.check_stale_fans().await;
+            self.check_task_panics().await;
         }
     }
 
@@ -465,6 +466,48 @@ impl ControlSupervisor {
             self.inner.fan_locals.write().await.remove(&fan_id);
             self.inner.rpm_locals.write().await.remove(&fan_id);
             self.inner.stale_fan_counters.write().await.remove(&fan_id);
+        }
+    }
+
+    /// Check whether any control task has panicked.
+    ///
+    /// Control tasks are spawned with `tokio::spawn` and their `JoinHandle`
+    /// is stored in `self.inner.tasks`. If a task panics, the handle
+    /// completes with `Err(JoinError)`, but nothing currently polls for
+    /// this — the fan stays in `OwnedFanSet` but receives no control
+    /// updates until the stale-data detector fires (~25 s).
+    ///
+    /// This method is called every publish-loop tick so that panics are
+    /// detected within one cadence period.
+    async fn check_task_panics(&self) {
+        let mut panicked = Vec::new();
+        {
+            let tasks = self.inner.tasks.read().await;
+            for (fan_id, task_handle) in tasks.iter() {
+                if task_handle.handle.is_finished() {
+                    panicked.push(fan_id.clone());
+                }
+            }
+        }
+
+        if panicked.is_empty() {
+            return;
+        }
+
+        for fan_id in panicked {
+            let task_handle = self.inner.tasks.write().await.remove(&fan_id);
+            if let Some(handle) = task_handle {
+                let result = handle.handle.await;
+                if let Err(_) = result {
+                    tracing::error!(fan_id = %fan_id, "control task panicked — writing fallback and degrading");
+                    let reason = DegradedReason::FanNoLongerEnrollable {
+                        fan_id: fan_id.clone(),
+                        support_state: kde_fan_control_core::inventory::SupportState::Unavailable,
+                        reason: "control task panicked".to_string(),
+                    };
+                    self.degrade_and_stop(&fan_id, reason).await;
+                }
+            }
         }
     }
 
@@ -2049,13 +2092,17 @@ impl LifecycleIface {
                     // Find the applied entry to get the control mode.
                     if let Some(applied_entry) = applied.fans.get(fan_id) {
                         owned.claim_fan(fan_id, applied_entry.control_mode, &sysfs_path);
+                        // Sync the panic fallback mirror after EACH claim so that the
+                        // panic hook always sees a complete set of owned-fan PWM paths.
+                        // Without this, a panic between claims would leave newly claimed
+                        // fans invisible to the hook, bypassing PWM-255 fallback.
+                        sync_panic_fallback_mirror_from_owned(&self.control.panic_fallback_mirror(), &owned);
                     }
                 }
                 // Clear degraded state for this fan.
                 self.degraded.write().await.clear_fan(fan_id);
             }
 
-            sync_panic_fallback_mirror_from_owned(&self.control.panic_fallback_mirror(), &owned);
             persist_owned_fans(&owned);
         }
 
