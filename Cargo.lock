@@ -434,6 +434,7 @@ dependencies = [
  "clap",
  "dirs",
  "kde-fan-control-core",
+ "libc",
  "sd-notify",
  "serde",
  "serde_json",

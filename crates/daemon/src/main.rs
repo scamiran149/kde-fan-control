@@ -1287,6 +1287,31 @@ struct DaemonArgs {
 // Authorization boundary
 // ---------------------------------------------------------------------------
 
+/// Read process start time from `/proc/<pid>/stat` and convert to
+/// microseconds since boot (as required by polkit's start-time field).
+/// Returns `None` if the stat file cannot be parsed.
+fn get_process_start_time(pid: u32) -> Option<u64> {
+    let stat_path = format!("/proc/{pid}/stat");
+    let stat_content = std::fs::read_to_string(&stat_path).ok()?;
+    // Field 22 (1-indexed) is starttime (clock ticks since boot).
+    // Format: pid (comm) state ppid pgrp session tty_nr tpgid flags ...
+    // The comm field may contain spaces, so we find the closing ')' first.
+    let rest = stat_content.rsplit(')').next()?;
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    // After comm's closing paren, the fields are:
+    //   state(0) ppid(1) pgrp(2) session(3) tty_nr(4) tpgid(5) flags(6)
+    //   min_flt(7) cmin_flt(8) maj_flt(9) cmaj_flt(10) utime(11) stime(12)
+    //   cutime(13) cstime(14) priority(15) nice(16) num_threads(17)
+    //   itrealvalue(18) starttime(19)
+    let start_time_ticks = fields.get(19)?.parse::<u64>().ok()?;
+    let clk_tck = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64;
+    if clk_tck == 0 {
+        return None;
+    }
+    // Convert ticks to microseconds for polkit
+    Some(start_time_ticks * 1_000_000 / clk_tck)
+}
+
 /// Check whether the caller of a DBus method is authorized for privileged
 /// operations. Tries polkit CheckAuthorization first; falls back to UID 0
 /// if the polkit authority is unavailable.
@@ -1313,9 +1338,18 @@ async fn require_authorized(
         .map_err(|e| fdo::Error::AccessDenied(format!("could not resolve caller identity: {e}")))?;
 
     let pid: u32 = dbus_proxy
-        .get_connection_unix_process_id(bus_name)
+        .get_connection_unix_process_id(bus_name.clone())
         .await
-        .unwrap_or(0);
+        .map_err(|e| {
+            fdo::Error::AccessDenied(format!(
+                "cannot determine caller process ID: {e}"
+            ))
+        })?;
+    if pid == 0 {
+        return Err(fdo::Error::AccessDenied(
+            "caller process ID is 0 (kernel process) — authorization denied".into(),
+        ));
+    }
 
     match check_polkit_authorization(connection, uid, pid).await {
         Ok(true) => Ok(()),
@@ -1357,7 +1391,7 @@ async fn check_polkit_authorization(
         let mut m = HashMap::new();
         m.insert("pid", Value::from(pid));
         m.insert("uid", Value::from(uid));
-        m.insert("start-time", Value::from(0u64));
+        m.insert("start-time", Value::from(get_process_start_time(pid).unwrap_or(0u64)));
         m
     };
 
