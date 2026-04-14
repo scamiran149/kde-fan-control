@@ -25,7 +25,7 @@ override_dh_auto_install:
 		$(CURDIR)/debian/kde-fan-control/usr/libexec/kde-fan-control-fallback
 	install -Dm755 target/release/kde-fan-control-cli \
 		$(CURDIR)/debian/kde-fan-control/usr/bin/kde-fan-control
-	install -Dm755 gui/build/gui_app \
+	install -Dm755 gui/build/kde-fan-control-gui \
 		$(CURDIR)/debian/kde-fan-control/usr/bin/kde-fan-control-gui
 
 	install -Dm644 gui/build/org/kde/fancontrol/qmldir \

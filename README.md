@@ -83,7 +83,7 @@ sudo ./target/release/kde-fan-control-daemon
 ./target/release/kde-fan-control-daemon --session-bus
 
 # GUI
-./gui/build/gui_app
+./gui/build/kde-fan-control-gui
 
 # CLI
 ./target/release/kde-fan-control inventory

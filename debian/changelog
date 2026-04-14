@@ -1,5 +1,5 @@
-kde-fan-control (1.0.0-1) questing; urgency=medium
+kde-fan-control (1.0.1-1) questing; urgency=medium
 
-  * Initial release.
+  * Package post-release fixes and improve sensor selection UI.
 
- -- Samiran Amiran <sherwin@amiran.us>  Mon, 13 Apr 2026 00:00:00 +0000
+ -- Samiran Amiran <sherwin@amiran.us>  Tue, 14 Apr 2026 00:00:00 +0000

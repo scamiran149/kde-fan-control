@@ -83,7 +83,7 @@ cmake -B gui/build -S gui
 cmake --build gui/build
 
 # Run
-./gui/build/gui_app
+./gui/build/kde-fan-control-gui
 ```
 
 ### GUI build troubleshooting
