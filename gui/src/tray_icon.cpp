@@ -22,6 +22,7 @@
 #include <QAction>
 #include <QCoreApplication>
 #include <QDebug>
+#include <QWindow>
 
 TrayIcon::TrayIcon(StatusMonitor *statusMonitor,
                    OverviewModel *overviewModel,
@@ -35,20 +36,24 @@ TrayIcon::TrayIcon(StatusMonitor *statusMonitor,
     m_sni->setCategory(KStatusNotifierItem::SystemServices);
     m_sni->setTitle(QStringLiteral("Fan Control"));
 
-    m_sni->setIconByName(QStringLiteral("network-offline"));
+    m_sni->setIconByName(QStringLiteral("network-offline-symbolic"));
     m_sni->setStatus(KStatusNotifierItem::Passive);
-    m_sni->setToolTipIconByName(QStringLiteral("network-offline"));
+    m_sni->setToolTipIconByName(QStringLiteral("network-offline-symbolic"));
     m_sni->setToolTipTitle(QStringLiteral("Fan Control"));
     m_sni->setToolTipSubTitle(QStringLiteral("Daemon disconnected"));
 
     auto *openAction = new QAction(QStringLiteral("Open Fan Control"), this);
     connect(openAction, &QAction::triggered, this, &TrayIcon::activateMainWindow);
 
+    auto *popoverAction = new QAction(QStringLiteral("Status Overview"), this);
+    connect(popoverAction, &QAction::triggered, this, &TrayIcon::showStatusPopover);
+
     auto *ackAction = new QAction(QStringLiteral("Acknowledge Alerts"), this);
     connect(ackAction, &QAction::triggered, this, &TrayIcon::acknowledgeAlerts);
 
     auto *menu = new QMenu();
     menu->addAction(openAction);
+    menu->addAction(popoverAction);
     menu->addSeparator();
     menu->addAction(ackAction);
 
@@ -231,12 +236,12 @@ int TrayIcon::severityRank(const QString &state, bool highTempAlert)
 
 QString TrayIcon::severityIcon(const QString &severity)
 {
-    if (severity == QStringLiteral("fallback"))    return QStringLiteral("dialog-error");
-    if (severity == QStringLiteral("degraded"))    return QStringLiteral("data-warning");
-    if (severity == QStringLiteral("high-temp"))   return QStringLiteral("temperature-warm");
-    if (severity == QStringLiteral("managed"))     return QStringLiteral("dialog-positive");
-    if (severity == QStringLiteral("unmanaged"))    return QStringLiteral("dialog-information");
-    return QStringLiteral("network-offline");
+    if (severity == QStringLiteral("fallback"))    return QStringLiteral("dialog-error-symbolic");
+    if (severity == QStringLiteral("degraded"))    return QStringLiteral("data-warning-symbolic");
+    if (severity == QStringLiteral("high-temp"))   return QStringLiteral("temperature-high-symbolic");
+    if (severity == QStringLiteral("managed"))     return QStringLiteral("emblem-ok-symbolic");
+    if (severity == QStringLiteral("unmanaged"))    return QStringLiteral("dialog-information-symbolic");
+    return QStringLiteral("network-offline-symbolic");
 }
 
 KStatusNotifierItem::ItemStatus TrayIcon::severityStatus(const QString &severity)
@@ -246,4 +251,11 @@ KStatusNotifierItem::ItemStatus TrayIcon::severityStatus(const QString &severity
     if (severity == QStringLiteral("high-temp"))   return KStatusNotifierItem::NeedsAttention;
     if (severity == QStringLiteral("managed"))     return KStatusNotifierItem::Active;
     return KStatusNotifierItem::Passive;
+}
+
+void TrayIcon::setAssociatedWindow(QWindow *window)
+{
+    if (m_sni && window) {
+        m_sni->setAssociatedWindow(window);
+    }
 }

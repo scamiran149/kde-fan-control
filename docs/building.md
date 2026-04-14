@@ -94,6 +94,26 @@ cmake --build gui/build
 
 ## Running for development
 
+### Local developer install
+
+If you want the system bus service, polkit prompt, desktop launcher, and icon to behave like an installed app during local testing, use the helper script:
+
+```bash
+cargo build --release
+cmake -B gui/build -S gui
+cmake --build gui/build
+sudo ./scripts/dev-install.sh install --release
+sudo systemctl enable --now kde-fan-control-daemon
+```
+
+This installs the packaging assets into `/usr/local`, writes a dev-only systemd unit into `/etc/systemd/system`, and copies the current build outputs into `/usr/local/bin` and `/usr/local/libexec`. Remove everything with:
+
+```bash
+sudo ./scripts/dev-install.sh uninstall
+```
+
+See [docs/developer-install.md](developer-install.md) for the installed paths.
+
 ### Daemon (session bus)
 
 The daemon defaults to the system bus, which requires root. For development, use the session bus:
@@ -105,9 +125,15 @@ The daemon defaults to the system bus, which requires root. For development, use
 # Terminal 2: Run CLI (auto-detects session bus fallback)
 ./target/debug/kde-fan-control inventory
 
-# Terminal 3: Run GUI
+# Terminal 3: Run GUI (as regular user, NOT root)
 ./gui/build/gui-app
 ```
+
+The GUI must run as a regular user — not root/sudo. KStatusNotifierItem
+(the system tray icon) registers on the user's DBus session bus; running as
+root connects to a different session bus where the Plasma tray is not
+listening. Privileged write operations are handled via polkit: click the
+"Unlock" toolbar button to authenticate.
 
 The daemon's session-bus mode is a development convenience. Production use always targets the system bus.
 

@@ -18,6 +18,7 @@
 class FanListModel;
 class OverviewModel;
 class StatusMonitor;
+class QWindow;
 
 class TrayIcon : public QObject
 {
@@ -45,6 +46,10 @@ public:
     // Called by NotificationHandler when user acknowledges alerts
     Q_INVOKABLE void acknowledgeAlerts();
 
+    // Associate the tray icon with a window so that primary-click
+    // raises the window and Plasma can match the tray entry to the app.
+    void setAssociatedWindow(QWindow *window);
+
 signals:
     void worstSeverityChanged();
     void managedFanCountChanged();
@@ -52,6 +57,7 @@ signals:
     void daemonConnectedChanged();
     void hasStickyAlertsChanged();
     void activateMainWindow();
+    void showStatusPopover();
 
 public slots:
     void updateSeverity();

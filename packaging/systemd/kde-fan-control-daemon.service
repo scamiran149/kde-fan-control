@@ -19,7 +19,8 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 CapabilityBoundingSet=CAP_SYS_RAWIO
 AmbientCapabilities=CAP_SYS_RAWIO
-ReadWritePaths=/sys/class/hwmon /var/lib/kde-fan-control
+StateDirectory=kde-fan-control
+ReadWritePaths=/sys/class/hwmon
 
 [Install]
 WantedBy=multi-user.target

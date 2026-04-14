@@ -13,7 +13,7 @@ Users can safely and flexibly control desktop fan behavior with understandable p
 - **Auto-tune** with bounded observation window and softened proposals; review before accepting
 - **Safe-maximum fallback** — controlled fans fail to PWM 255 on any daemon failure (panic, crash, graceful shutdown)
 - **Boot reconciliation** — managed fans auto-resume after reboot
-- **Read-open / write-privileged** DBus access (UID-0 for writes; polkit planned)
+- **Read-open / write-privileged** DBus access via polkit with UID-0 fallback
 - **Friendly names** for sensors and fans
 - **KDE-native GUI** with wizard dialog, fan detail pages, system tray, and desktop notifications
 
@@ -89,6 +89,18 @@ sudo ./target/release/kde-fan-control-daemon
 ./target/release/kde-fan-control inventory
 ./target/release/kde-fan-control state
 ```
+
+### Local installed-style testing
+
+```sh
+cargo build --release
+cmake -B gui/build -S gui
+cmake --build gui/build
+sudo ./scripts/dev-install.sh install --release
+sudo systemctl enable --now kde-fan-control-daemon
+```
+
+This installs the desktop file, icon, polkit policy, DBus files, and a dev systemd unit for local testing. Remove them with `sudo ./scripts/dev-install.sh uninstall`.
 
 ## CLI Quick Reference
 

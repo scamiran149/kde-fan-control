@@ -107,6 +107,23 @@ install(FILES data/kdefancontrol.notifyrc
     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/knotifications6
 )
 
+# Install the desktop entry file
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/org.kde.fancontrol.desktop
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/applications
+)
+
+# Install the application icon to the hicolor icon theme
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/icons/hicolor/scalable/apps/kde-fan-control.svg
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps
+)
+
+# Install the QML module descriptor so the engine can resolve types
+# when the binary is launched from outside the build tree.
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/org/kde/fancontrol/qmldir
+              ${CMAKE_CURRENT_BINARY_DIR}/org/kde/fancontrol/gui_app.qmltypes
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/qt6/qml/org/kde/fancontrol
+)
+
 install(TARGETS gui_app
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )

@@ -10,7 +10,7 @@ use std::time::Instant;
 use clap::Parser;
 use kde_fan_control_core::config::{
     AppConfig, AppliedFanEntry, DegradedReason, DegradedState, DraftFanEntry, LifecycleEvent,
-    LifecycleEventLog, apply_draft, validate_draft,
+    LifecycleEventLog, app_state_dir, apply_draft, validate_draft,
 };
 use kde_fan_control_core::control::{
     ActuatorPolicy, AggregationFn, AutoTuneProposal, ControlCadence, PidController, PidGains,
@@ -40,10 +40,7 @@ const BUS_PATH_LIFECYCLE: &str = "/org/kde/FanControl/Lifecycle";
 const BUS_PATH_CONTROL: &str = "/org/kde/FanControl/Control";
 
 fn state_dir() -> PathBuf {
-    dirs::state_dir()
-        .or_else(dirs::data_local_dir)
-        .unwrap_or_else(|| PathBuf::from("/var/lib"))
-        .join("kde-fan-control")
+    app_state_dir()
 }
 
 fn owned_fans_path() -> PathBuf {
@@ -1137,12 +1134,21 @@ async fn require_authorized(
 }
 
 async fn check_polkit_authorization(
-    connection: &zbus::Connection,
+    _connection: &zbus::Connection,
     uid: u32,
     pid: u32,
 ) -> Result<bool, String> {
     use std::collections::HashMap;
     use zbus::zvariant::Value;
+
+    // Polkit lives on the system bus. The daemon may be running on the
+    // session bus (dev mode), so always open a system-bus connection
+    // for the polkit call rather than reusing the daemon's connection.
+    let system_bus = zbus::connection::Builder::system()
+        .map_err(|e| format!("system bus builder failed: {e}"))?
+        .build()
+        .await
+        .map_err(|e| format!("system bus connection failed: {e}"))?;
 
     let subject_dict: HashMap<&str, Value<'_>> = {
         let mut m = HashMap::new();
@@ -1152,7 +1158,7 @@ async fn check_polkit_authorization(
         m
     };
 
-    let reply = connection
+    let reply = system_bus
         .call_method(
             Some("org.freedesktop.PolicyKit1"),
             "/org/freedesktop/PolicyKit1/Authority",

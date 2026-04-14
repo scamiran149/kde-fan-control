@@ -100,11 +100,9 @@ Kirigami.ApplicationWindow {
         id: wizardDialog
     }
 
-    // Placeholder component for future tray popover wiring.
-    // Keep it hidden so it doesn't render inside the main window.
+    // Tray popover — popup window shown from the "Status Overview" tray menu action.
     TrayPopover {
         id: trayPopover
-        visible: false
     }
 
     pageStack.initialPage: overviewPage
@@ -115,6 +113,9 @@ Kirigami.ApplicationWindow {
             root.show()
             root.raise()
             root.requestActivate()
+        }
+        function onShowStatusPopover() {
+            trayPopover.showPopover()
         }
     }
 }

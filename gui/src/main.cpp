@@ -9,6 +9,7 @@
 #include <QQmlContext>
 #include <QIcon>
 #include <QDebug>
+#include <QWindow>
 
 #include <klocalizedqmlcontext.h>
 
@@ -30,6 +31,7 @@ int main(int argc, char *argv[])
     app.setOrganizationDomain(QStringLiteral("org.kde"));
     app.setApplicationName(QStringLiteral("kde-fan-control-gui"));
     app.setApplicationVersion(QStringLiteral("0.1.0"));
+    app.setWindowIcon(QIcon::fromTheme(QStringLiteral("kde-fan-control")));
 
     // Central DBus proxy for the daemon on the system bus.
     DaemonInterface daemonInterface;
@@ -82,10 +84,15 @@ int main(int argc, char *argv[])
     const QUrl url(QStringLiteral("qrc:/org/kde/fancontrol/qml/Main.qml"));
 
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreated,
-                     &app, [url](QObject *obj, const QUrl &objUrl) {
+                     &app, [url, &trayIcon](QObject *obj, const QUrl &objUrl) {
         if (!obj && url == objUrl) {
             qCritical() << "Failed to create QML root object from" << url;
             QCoreApplication::exit(-1);
+        }
+        if (obj) {
+            if (auto *window = qobject_cast<QWindow *>(obj)) {
+                trayIcon.setAssociatedWindow(window);
+            }
         }
     }, Qt::QueuedConnection);
 

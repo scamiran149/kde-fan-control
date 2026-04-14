@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Fan Control
+Comment=KDE fan control daemon interface
+Icon=kde-fan-control
+Exec=kde-fan-control-gui
+Categories=System;Monitor;
+StartupNotify=true
+StartupWMClass=kde-fan-control-gui
+DBusActivatable=false
