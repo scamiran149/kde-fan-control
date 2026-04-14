@@ -752,16 +752,6 @@ impl ControlSupervisor {
                                 latest_output_percent = None;
                                 continue;
                             }
-                            {
-                                let owned = self.inner.owned.read().await;
-                                if let Err(error) =
-                                    kde_fan_control_core::lifecycle::write_fallback_single(
-                                        &fan_id, &owned,
-                                    )
-                                {
-                                    tracing::error!(fan_id = %fan_id, error = %error, "fallback write failed after sensor read failure");
-                                }
-                            }
                             self.degrade_and_stop(&fan_id, reason).await;
                             break;
                         }
@@ -913,6 +903,12 @@ impl ControlSupervisor {
     }
 
     async fn degrade_and_stop(&self, fan_id: &str, reason: DegradedReason) {
+        {
+            let owned = self.inner.owned.read().await;
+            if let Err(e) = kde_fan_control_core::lifecycle::write_fallback_single(fan_id, &owned) {
+                tracing::error!(fan_id = %fan_id, error = %e, "failed to write fallback PWM before degrading fan");
+            }
+        }
         self.inner
             .degraded
             .write()
@@ -922,28 +918,12 @@ impl ControlSupervisor {
     }
 
     async fn handle_live_write_failure(&self, fan_id: &str, error: &str) {
-        {
-            let owned = self.inner.owned.read().await;
-            if let Err(fallback_error) =
-                kde_fan_control_core::lifecycle::write_fallback_single(fan_id, &owned)
-            {
-                tracing::error!(fan_id = %fan_id, error = %fallback_error, "targeted fallback after pwm write failure failed");
-            }
-        }
-
-        self.inner.owned.write().await.release_fan(fan_id);
-        self.sync_panic_fallback_mirror().await;
-        {
-            let owned = self.inner.owned.read().await;
-            persist_owned_fans(&owned);
-        }
-
         let degraded_reason = DegradedReason::FanNoLongerEnrollable {
             fan_id: fan_id.to_string(),
             support_state: kde_fan_control_core::inventory::SupportState::Unavailable,
             reason: format!("live pwm write failed: {error}"),
         };
-        self.degrade_and_stop(fan_id, degraded_reason.clone()).await;
+        self.degrade_and_stop(fan_id, degraded_reason).await;
     }
 }
 
@@ -2973,7 +2953,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn control_supervisor_degrades_and_releases_on_pwm_write_failure() {
+    async fn control_supervisor_degrades_on_pwm_write_failure_keeps_owned() {
         let fixture = ControlFixture::new();
         fixture.write_temp("56000\n");
         fixture.write_pwm_seed("0\n");
@@ -3008,7 +2988,9 @@ mod tests {
             .expect("should replace pwm file with directory to force write failure");
         tokio::time::sleep(Duration::from_millis(80)).await;
 
-        assert!(!owned.read().await.owns("hwmon-test-0000000000000001-fan1"));
+        // After PWM write failure, the fan should stay in OwnedFanSet (not released)
+        // so that fallback writes remain possible for the degraded fan.
+        assert!(owned.read().await.owns("hwmon-test-0000000000000001-fan1"));
         let degraded = degraded.read().await;
         assert!(
             degraded
