@@ -1397,6 +1397,15 @@ impl InventoryIface {
         name: &str,
     ) -> fdo::Result<()> {
         require_authorized(connection, &header).await?;
+        if id.len() > MAX_NAME_LENGTH {
+            return Err(fdo::Error::InvalidArgs("id exceeds 128 characters".into()));
+        }
+        if name.is_empty() {
+            return Err(fdo::Error::InvalidArgs("name must not be empty".into()));
+        }
+        if name.len() > MAX_NAME_LENGTH {
+            return Err(fdo::Error::InvalidArgs("name exceeds 128 characters".into()));
+        }
         {
             let mut config = self.config.write().await;
             config.set_sensor_name(id, name.to_string());
@@ -1416,6 +1425,15 @@ impl InventoryIface {
         name: &str,
     ) -> fdo::Result<()> {
         require_authorized(connection, &header).await?;
+        if id.len() > MAX_NAME_LENGTH {
+            return Err(fdo::Error::InvalidArgs("id exceeds 128 characters".into()));
+        }
+        if name.is_empty() {
+            return Err(fdo::Error::InvalidArgs("name must not be empty".into()));
+        }
+        if name.len() > MAX_NAME_LENGTH {
+            return Err(fdo::Error::InvalidArgs("name exceeds 128 characters".into()));
+        }
         {
             let mut config = self.config.write().await;
             config.set_fan_name(id, name.to_string());
@@ -1434,6 +1452,9 @@ impl InventoryIface {
         id: &str,
     ) -> fdo::Result<()> {
         require_authorized(connection, &header).await?;
+        if id.len() > MAX_NAME_LENGTH {
+            return Err(fdo::Error::InvalidArgs("id exceeds 128 characters".into()));
+        }
         {
             let mut config = self.config.write().await;
             config.remove_sensor_name(id);
@@ -1452,6 +1473,9 @@ impl InventoryIface {
         id: &str,
     ) -> fdo::Result<()> {
         require_authorized(connection, &header).await?;
+        if id.len() > MAX_NAME_LENGTH {
+            return Err(fdo::Error::InvalidArgs("id exceeds 128 characters".into()));
+        }
         {
             let mut config = self.config.write().await;
             config.remove_fan_name(id);
