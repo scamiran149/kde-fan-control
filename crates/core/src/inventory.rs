@@ -290,6 +290,9 @@ where
     }
 }
 
+/// Best-effort writability check. Not used as a gate for writes — the daemon
+/// attempts writes directly and handles errors. This check is advisory only,
+/// used for inventory reporting to indicate whether a fan is likely enrollable.
 fn is_writable(path: &Path) -> io::Result<bool> {
     Ok(fs::metadata(path)?.permissions().readonly().not())
 }
