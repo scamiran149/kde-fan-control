@@ -76,6 +76,8 @@ fn persist_owned_fans(owned: &OwnedFanSet) {
             if let Err(e) = fs::rename(&tmp_path, &path) {
                 tracing::warn!(from = %tmp_path.display(), to = %path.display(), error = %e, "failed to rename owned-fans list");
                 let _ = fs::remove_file(&tmp_path);
+            } else if let Err(e) = fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600)) {
+                tracing::warn!(path = %path.display(), error = %e, "failed to set permissions on owned-fans list");
             }
         }
         Err(e) => {
@@ -642,7 +644,10 @@ impl ControlSupervisor {
         let is_running;
         {
             let mut auto_tune = self.inner.auto_tune.write().await;
-            if let Some(AutoTuneExecutionState::Running {
+            // Check for a Running state and gather what we need.  All
+            // pattern borrows from the HashMap entry must be released
+            // before we can mutate the entry again via get_mut().
+            let transition = if let Some(AutoTuneExecutionState::Running {
                 started_at,
                 observation_window_ms,
                 samples,
@@ -653,26 +658,38 @@ impl ControlSupervisor {
                     elapsed_ms,
                     aggregated_temp_millidegrees,
                 });
+                let obs_window = *observation_window_ms;
 
-                if elapsed_ms >= *observation_window_ms {
-                    let result = proposal_from_auto_tune_samples(*observation_window_ms, samples);
-                    match result {
+                if elapsed_ms >= obs_window {
+                    let result = proposal_from_auto_tune_samples(obs_window, samples);
+                    // Build the replacement state from owned data so the
+                    // pattern borrow on `auto_tune` is released before we
+                    // attempt a second mutation.
+                    Some(match result {
                         Ok(proposal) => {
-                            *auto_tune.get_mut(fan_id).expect("state should exist") =
-                                AutoTuneExecutionState::Completed {
-                                    observation_window_ms: *observation_window_ms,
-                                    proposal,
-                                };
                             should_emit = true;
+                            AutoTuneExecutionState::Completed {
+                                observation_window_ms: obs_window,
+                                proposal,
+                            }
                         }
-                        Err(error) => {
-                            *auto_tune.get_mut(fan_id).expect("state should exist") =
-                                AutoTuneExecutionState::Failed {
-                                    observation_window_ms: *observation_window_ms,
-                                    error,
-                                };
-                        }
-                    }
+                        Err(error) => AutoTuneExecutionState::Failed {
+                            observation_window_ms: obs_window,
+                            error,
+                        },
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // Now apply the transition (if any) using a fresh get_mut()
+            // that no longer conflicts with the pattern borrow above.
+            if let Some(new_state) = transition {
+                if let Some(state) = auto_tune.get_mut(fan_id) {
+                    *state = new_state;
                 }
             }
 
@@ -2038,6 +2055,16 @@ impl LifecycleIface {
 
         self.control.stop_all().await;
 
+        // Write PWM=255 for all owned fans as a safety precaution between
+        // stopping control and starting new tasks.
+        {
+            let owned = self.owned.read().await;
+            let result = kde_fan_control_core::lifecycle::write_fallback_for_owned(&owned);
+            if !result.failed.is_empty() {
+                tracing::warn!(failed = ?result.failed, "some fans failed to receive fallback PWM during ApplyDraft stop");
+            }
+        }
+
         // Update degraded state for any rejected fans.
         {
             let mut degraded = self.degraded.write().await;
@@ -3055,7 +3082,9 @@ mod tests {
             "panic: simulated".to_string(),
         ));
 
-        let config = config.try_read().unwrap();
+        let config = config
+            .try_read()
+            .expect("config lock should be available after panic recorder completes");
         assert!(config.fallback_incident.is_some());
     }
 
