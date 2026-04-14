@@ -46,6 +46,13 @@ pub struct PidGains {
     pub kd: f64,
 }
 
+impl PidGains {
+    /// Returns `true` if all gains are finite (not NaN, Infinity, or -Infinity).
+    pub fn is_finite(&self) -> bool {
+        self.kp.is_finite() && self.ki.is_finite() && self.kd.is_finite()
+    }
+}
+
 impl Default for PidGains {
     fn default() -> Self {
         Self {
@@ -102,6 +109,16 @@ pub struct PidLimits {
     pub integral_max: f64,
     pub derivative_min: f64,
     pub derivative_max: f64,
+}
+
+impl PidLimits {
+    /// Returns `true` if all limits are finite (not NaN, Infinity, or -Infinity).
+    pub fn is_finite(&self) -> bool {
+        self.integral_min.is_finite()
+            && self.integral_max.is_finite()
+            && self.derivative_min.is_finite()
+            && self.derivative_max.is_finite()
+    }
 }
 
 impl Default for PidLimits {

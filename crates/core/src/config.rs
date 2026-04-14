@@ -60,10 +60,19 @@ pub struct AppConfig {
     /// continue surfacing which owned fans were driven toward safe maximum.
     #[serde(default)]
     pub fallback_incident: Option<FallbackIncident>,
+
+    /// Interval in milliseconds between re-assessment attempts for degraded fans.
+    /// Defaults to 10000 (10 seconds).
+    #[serde(default = "default_reassess_degraded_interval_ms")]
+    pub reassess_degraded_interval_ms: u64,
 }
 
 fn default_version() -> u32 {
     CONFIG_VERSION
+}
+
+fn default_reassess_degraded_interval_ms() -> u64 {
+    10000
 }
 
 impl Default for AppConfig {
@@ -74,6 +83,7 @@ impl Default for AppConfig {
             draft: DraftConfig::default(),
             applied: None,
             fallback_incident: None,
+            reassess_degraded_interval_ms: default_reassess_degraded_interval_ms(),
         }
     }
 }
@@ -439,6 +449,12 @@ pub enum ValidationError {
 
     /// A managed fan specified invalid PID clamp limits.
     InvalidPidLimits { fan_id: String, reason: String },
+
+    /// A managed fan specified non-finite PID gains (NaN or Infinity).
+    InvalidPidGains { fan_id: String, detail: String },
+
+    /// A managed fan specified an out-of-bounds target temperature.
+    InvalidTargetTemperature { fan_id: String, value: i64 },
 }
 
 impl std::fmt::Display for ValidationError {
@@ -503,6 +519,15 @@ impl std::fmt::Display for ValidationError {
             Self::InvalidPidLimits { fan_id, reason } => {
                 write!(f, "managed fan '{fan_id}' has invalid PID limits: {reason}")
             }
+            Self::InvalidPidGains { fan_id, detail } => {
+                write!(f, "managed fan '{fan_id}' has invalid PID gains: {detail}")
+            }
+            Self::InvalidTargetTemperature { fan_id, value } => {
+                write!(
+                    f,
+                    "managed fan '{fan_id}' has invalid target temperature: {value} m°C (must be 1..=150000)"
+                )
+            }
         }
     }
 }
@@ -561,6 +586,13 @@ fn validate_actuator_policy(fan_id: &str, policy: ActuatorPolicy) -> Result<(), 
 }
 
 fn validate_pid_limits(fan_id: &str, limits: PidLimits) -> Result<(), ValidationError> {
+    if !limits.is_finite() {
+        return Err(ValidationError::InvalidPidLimits {
+            fan_id: fan_id.to_string(),
+            reason: "PID limits contain non-finite values (NaN or Infinity)".to_string(),
+        });
+    }
+
     if limits.integral_min > limits.integral_max {
         return Err(ValidationError::InvalidPidLimits {
             fan_id: fan_id.to_string(),
@@ -721,6 +753,43 @@ pub fn validate_draft(draft: &DraftConfig, snapshot: &InventorySnapshot) -> Vali
             continue;
         }
 
+        // PID gains must be finite (not NaN or Infinity).
+        let gains = entry.resolved_pid_gains();
+        if !gains.is_finite() {
+            let mut details = Vec::new();
+            if !gains.kp.is_finite() {
+                details.push(format!("kp={}", gains.kp));
+            }
+            if !gains.ki.is_finite() {
+                details.push(format!("ki={}", gains.ki));
+            }
+            if !gains.kd.is_finite() {
+                details.push(format!("kd={}", gains.kd));
+            }
+            rejected.push((
+                fan_id.clone(),
+                ValidationError::InvalidPidGains {
+                    fan_id: fan_id.clone(),
+                    detail: format!("non-finite PID gains: {}", details.join(", ")),
+                },
+            ));
+            continue;
+        }
+
+        // Target temperature must be within sensible bounds.
+        if let Some(target) = entry.resolved_target_temp_millidegrees() {
+            if target <= 0 || target > 150_000 {
+                rejected.push((
+                    fan_id.clone(),
+                    ValidationError::InvalidTargetTemperature {
+                        fan_id: fan_id.clone(),
+                        value: target,
+                    },
+                ));
+                continue;
+            }
+        }
+
         // 6. All temperature sources must exist.
         let mut temp_ok = true;
         for temp_id in &entry.temp_sources {
@@ -849,6 +918,9 @@ pub enum DegradedReason {
 
     /// A managed fan produced no valid sensor data for an extended period.
     StaleSensorData { fan_id: String },
+
+    /// A degraded fan was automatically recovered via periodic re-assessment.
+    FanRecovered { fan_id: String },
 }
 
 impl std::fmt::Display for DegradedReason {
@@ -903,6 +975,28 @@ impl std::fmt::Display for DegradedReason {
                     "fan '{fan_id}' produced no valid sensor data for an extended period"
                 )
             }
+            Self::FanRecovered { fan_id } => {
+                write!(f, "fan '{fan_id}' recovered from degraded state")
+            }
+        }
+    }
+}
+
+impl DegradedReason {
+    /// Whether a fan degraded for this reason may be automatically recovered
+    /// by re-assessing hardware availability.
+    pub fn is_recoverable(&self) -> bool {
+        match self {
+            Self::TempSourceMissing { .. }
+            | Self::StaleSensorData { .. }
+            | Self::ControlModeUnavailable { .. } => true,
+            Self::FanMissing { .. }
+            | Self::FanNoLongerEnrollable { .. }
+            | Self::BootRestored { .. }
+            | Self::BootReconciled { .. }
+            | Self::PartialBootRecovery { .. }
+            | Self::FallbackActive { .. }
+            | Self::FanRecovered { .. } => false,
         }
     }
 }
@@ -1009,6 +1103,16 @@ impl DegradedState {
     pub fn degraded_fan_ids(&self) -> impl Iterator<Item = &str> {
         self.entries.keys().map(|s| s.as_str())
     }
+
+    /// Whether a specific fan has any recoverable degraded reasons.
+    /// A fan is considered recoverable if at least one of its reasons
+    /// is transient (sensor missing, stale data, control mode unavailable).
+    pub fn is_fan_recoverable(&self, fan_id: &str) -> bool {
+        self.entries
+            .get(fan_id)
+            .map(|reasons| reasons.iter().any(|r| r.is_recoverable()))
+            .unwrap_or(false)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1019,7 +1123,7 @@ impl DegradedState {
 mod tests {
     use super::*;
     use crate::control::{ActuatorPolicy, AggregationFn, ControlCadence, PidGains, PidLimits};
-    use crate::inventory::{HwmonDevice, TemperatureSensor};
+    use crate::inventory::{HwmonDevice, SupportState, TemperatureSensor};
 
     fn managed_draft_entry() -> DraftFanEntry {
         DraftFanEntry {
@@ -1526,5 +1630,315 @@ version = 999
     fn state_directory_env_ignores_empty_values() {
         assert!(state_directory_from_env(Some("   ".to_string())).is_none());
         assert!(state_directory_from_env(None).is_none());
+    }
+
+    #[test]
+    fn is_recoverable_classifies_degraded_reasons() {
+        assert!(DegradedReason::TempSourceMissing {
+            fan_id: "f1".into(),
+            temp_id: "t1".into(),
+        }
+        .is_recoverable());
+        assert!(DegradedReason::StaleSensorData {
+            fan_id: "f1".into(),
+        }
+        .is_recoverable());
+        assert!(DegradedReason::ControlModeUnavailable {
+            fan_id: "f1".into(),
+            mode: ControlMode::Pwm,
+        }
+        .is_recoverable());
+        assert!(!DegradedReason::FanMissing {
+            fan_id: "f1".into(),
+        }
+        .is_recoverable());
+        assert!(!DegradedReason::FanNoLongerEnrollable {
+            fan_id: "f1".into(),
+            support_state: SupportState::Unavailable,
+            reason: "test".into(),
+        }
+        .is_recoverable());
+        assert!(!DegradedReason::FanRecovered {
+            fan_id: "f1".into(),
+        }
+        .is_recoverable());
+    }
+
+    #[test]
+    fn degraded_state_is_fan_recoverable() {
+        let mut state = DegradedState::new();
+        state.mark_degraded(
+            "f1".into(),
+            vec![
+                DegradedReason::TempSourceMissing {
+                    fan_id: "f1".into(),
+                    temp_id: "t1".into(),
+                },
+                DegradedReason::FanMissing {
+                    fan_id: "f1".into(),
+                },
+            ],
+        );
+        assert!(state.is_fan_recoverable("f1"));
+
+        let mut state_no_recovery = DegradedState::new();
+        state_no_recovery.mark_degraded(
+            "f1".into(),
+            vec![DegradedReason::FanMissing {
+                fan_id: "f1".into(),
+            }],
+        );
+        assert!(!state_no_recovery.is_fan_recoverable("f1"));
+    }
+
+    #[test]
+    fn validation_rejects_non_finite_pid_gains() {
+        let snapshot = test_snapshot();
+        let mut draft = DraftConfig::default();
+
+        // Test NaN in kp
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            DraftFanEntry {
+                pid_gains: Some(PidGains {
+                    kp: f64::NAN,
+                    ki: 1.0,
+                    kd: 0.5,
+                }),
+                ..managed_draft_entry()
+            },
+        );
+        let result = validate_draft(&draft, &snapshot);
+        assert!(!result.all_passed());
+        assert!(matches!(
+            &result.rejected[0].1,
+            ValidationError::InvalidPidGains { .. }
+        ));
+
+        // Test Infinity in ki
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            DraftFanEntry {
+                pid_gains: Some(PidGains {
+                    kp: 1.0,
+                    ki: f64::INFINITY,
+                    kd: 0.5,
+                }),
+                ..managed_draft_entry()
+            },
+        );
+        let result = validate_draft(&draft, &snapshot);
+        assert!(!result.all_passed());
+        assert!(matches!(
+            &result.rejected[0].1,
+            ValidationError::InvalidPidGains { .. }
+        ));
+
+        // Test negative Infinity in kd
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            DraftFanEntry {
+                pid_gains: Some(PidGains {
+                    kp: 1.0,
+                    ki: 1.0,
+                    kd: f64::NEG_INFINITY,
+                }),
+                ..managed_draft_entry()
+            },
+        );
+        let result = validate_draft(&draft, &snapshot);
+        assert!(!result.all_passed());
+        assert!(matches!(
+            &result.rejected[0].1,
+            ValidationError::InvalidPidGains { .. }
+        ));
+    }
+
+    #[test]
+    fn validation_accepts_finite_pid_gains() {
+        let snapshot = test_snapshot();
+        let mut draft = DraftConfig::default();
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            DraftFanEntry {
+                pid_gains: Some(PidGains {
+                    kp: 2.0,
+                    ki: -0.5,
+                    kd: 10.0,
+                }),
+                ..managed_draft_entry()
+            },
+        );
+        let result = validate_draft(&draft, &snapshot);
+        assert!(result.all_passed());
+    }
+
+    #[test]
+    fn validation_rejects_target_temp_out_of_bounds() {
+        let snapshot = test_snapshot();
+        let mut draft = DraftConfig::default();
+
+        // Test target = 0 (absolute zero or below)
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            DraftFanEntry {
+                target_temp_millidegrees: Some(0),
+                ..managed_draft_entry()
+            },
+        );
+        let result = validate_draft(&draft, &snapshot);
+        assert!(!result.all_passed());
+        assert!(matches!(
+            &result.rejected[0].1,
+            ValidationError::InvalidTargetTemperature { .. }
+        ));
+
+        // Test target negative
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            DraftFanEntry {
+                target_temp_millidegrees: Some(-1000),
+                ..managed_draft_entry()
+            },
+        );
+        let result = validate_draft(&draft, &snapshot);
+        assert!(!result.all_passed());
+        assert!(matches!(
+            &result.rejected[0].1,
+            ValidationError::InvalidTargetTemperature { .. }
+        ));
+
+        // Test target > 150,000 (above 150 °C)
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            DraftFanEntry {
+                target_temp_millidegrees: Some(200_000),
+                ..managed_draft_entry()
+            },
+        );
+        let result = validate_draft(&draft, &snapshot);
+        assert!(!result.all_passed());
+        assert!(matches!(
+            &result.rejected[0].1,
+            ValidationError::InvalidTargetTemperature { .. }
+        ));
+    }
+
+    #[test]
+    fn validation_accepts_target_temp_in_bounds() {
+        let snapshot = test_snapshot();
+        let mut draft = DraftConfig::default();
+
+        // Test boundary: 1 m°C (just above 0)
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            DraftFanEntry {
+                target_temp_millidegrees: Some(1),
+                ..managed_draft_entry()
+            },
+        );
+        let result = validate_draft(&draft, &snapshot);
+        assert!(result.all_passed());
+
+        // Test boundary: 150,000 m°C (150 °C)
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            DraftFanEntry {
+                target_temp_millidegrees: Some(150_000),
+                ..managed_draft_entry()
+            },
+        );
+        let result = validate_draft(&draft, &snapshot);
+        assert!(result.all_passed());
+    }
+
+    #[test]
+    fn pid_gains_is_finite_method() {
+        assert!(PidGains {
+            kp: 1.0,
+            ki: 0.5,
+            kd: 0.1
+        }
+        .is_finite());
+        assert!(PidGains {
+            kp: -1.0,
+            ki: 0.0,
+            kd: 100.0
+        }
+        .is_finite());
+        assert!(!PidGains {
+            kp: f64::NAN,
+            ki: 1.0,
+            kd: 1.0
+        }
+        .is_finite());
+        assert!(!PidGains {
+            kp: 1.0,
+            ki: f64::INFINITY,
+            kd: 1.0
+        }
+        .is_finite());
+        assert!(!PidGains {
+            kp: 1.0,
+            ki: 1.0,
+            kd: f64::NEG_INFINITY
+        }
+        .is_finite());
+    }
+
+    #[test]
+    fn pid_limits_is_finite_method() {
+        assert!(PidLimits {
+            integral_min: -500.0,
+            integral_max: 500.0,
+            derivative_min: -5.0,
+            derivative_max: 5.0,
+        }
+        .is_finite());
+        assert!(!PidLimits {
+            integral_min: f64::NAN,
+            integral_max: 500.0,
+            derivative_min: -5.0,
+            derivative_max: 5.0,
+        }
+        .is_finite());
+        assert!(!PidLimits {
+            integral_min: -500.0,
+            integral_max: f64::INFINITY,
+            derivative_min: -5.0,
+            derivative_max: 5.0,
+        }
+        .is_finite());
+        assert!(!PidLimits {
+            integral_min: -500.0,
+            integral_max: 500.0,
+            derivative_min: f64::NEG_INFINITY,
+            derivative_max: 5.0,
+        }
+        .is_finite());
+    }
+
+    #[test]
+    fn validation_rejects_non_finite_pid_limits() {
+        let snapshot = test_snapshot();
+        let mut draft = DraftConfig::default();
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            DraftFanEntry {
+                pid_limits: Some(PidLimits {
+                    integral_min: f64::NAN,
+                    integral_max: 500.0,
+                    derivative_min: -5.0,
+                    derivative_max: 5.0,
+                }),
+                ..managed_draft_entry()
+            },
+        );
+        let result = validate_draft(&draft, &snapshot);
+        assert!(!result.all_passed());
+        assert!(matches!(
+            &result.rejected[0].1,
+            ValidationError::InvalidPidLimits { .. }
+        ));
     }
 }
