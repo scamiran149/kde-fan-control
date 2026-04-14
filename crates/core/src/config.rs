@@ -320,7 +320,17 @@ impl AppConfig {
         }
         let contents = toml::to_string_pretty(self)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        fs::write(&path, contents)
+        fs::write(&path, contents)?;
+        // Set config file to owner:rw, group:r, other:--- to avoid
+        // world-readable config leakage (L3).
+        #[cfg(unix)]
+        if let Err(e) =
+            std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o640))
+        {
+            // Log warning but don't fail the save
+            eprintln!("warning: failed to set permissions on config file: {e}");
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------

@@ -168,6 +168,36 @@ writes `kick_percent` for `kick_ms` before switching to the calculated value.
 This prevents fan stall on low-PWM startup, where some fans need a brief
 pulse above their minimum stable speed.
 
+### Degraded fan re-assessment
+
+A separate tokio task runs a periodic re-assessment loop (default: every 10 s,
+configurable via `reassess_degraded_interval_ms`). For each degraded fan
+whose reasons are all transient, it re-runs the same per-fan checks as boot
+reconciliation:
+
+```
+  every 10 s:
+    for each degraded fan with transient reasons:
+      fan exists?  → no  → still degraded
+      available?   → no  → still degraded
+      mode supported? → no → still degraded
+      temp sources present? → no → still degraded
+      ────────────────────────────────────────
+      all pass → recover:
+        clear degraded state
+        re-claim into OwnedFanSet
+        start new PID control task
+        emit DegradedStateChanged + LifecycleEventAppended
+```
+
+Recoverable reasons: `TempSourceMissing`, `StaleSensorData`,
+`ControlModeUnavailable`. Non-transient reasons (`FanMissing`,
+`FanNoLongerEnrollable`) are never re-assessed.
+
+Degraded fans remain in `OwnedFanSet` and sit at PWM=255 (written on
+degradation). Recovery clears the degraded state and starts PID control
+directly from that safe-maximum baseline.
+
 ---
 
 ## 5. Auto-Tune Design
@@ -227,6 +257,7 @@ Key invariants:
   draft are preserved — apply only adds or updates, it doesn't remove.
 - **Backward-compatible deserialization.** All fields introduced after Phase 1
   use `serde(default)` so that older configs load cleanly.
+- **Degraded fans are re-assessed.** Transient degradation does not require manual intervention; the daemon automatically retries every `reassess_degraded_interval_ms`.
 
 ---
 
@@ -400,4 +431,4 @@ them from the 100 ms telemetry churn.
 | GUI navigation | Some tray→main-window and popover integration stubs | Incomplete shell interaction |
 | FanDetailPage | Advanced tab values are hardcoded | Not reflecting live state |
 | Lifecycle events | Events refresh only on page load | Stale event list until user navigates away and back |
-| Authorization | Polkit `org.kde.fancontrol.write-config` with UID-0 fallback | GUI lock/unlock button, `auth_admin_keep` session caching |
+| Degraded fan recovery | `FanNoLongerEnrollable` is not re-assessed even though some sub-reasons (e.g., transient PWM write failure) could be transient | Fans degraded by PWM write failure stay degraded until restart or manual re-apply |

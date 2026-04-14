@@ -39,11 +39,30 @@ Installed at daemon startup via `std::panic::set_hook`:
 
 During normal operation, a fan can be degraded if:
 
-- **Temperature sensor becomes unreadable** — the fan cannot compute PID → write fallback for that fan, mark degraded, stop its control task
-- **PWM write fails** — write fallback, release ownership (fan becomes unmanaged), mark degraded
+- **Temperature sensor becomes unreadable** — write fallback PWM=255 for that fan, mark degraded, stop its control task. The fan is re-assessed periodically for automatic recovery.
+- **PWM write fails** — write fallback PWM=255, mark degraded, fan stays in `OwnedFanSet` at safe maximum. The fan is re-assessed periodically for automatic recovery.
 - **Hardware disappears** — mark degraded
 
 Degradation is **per-fan**. Other fans continue running normally.
+
+### Layer 3.5 — Degraded Fan Re-Assessment
+
+Fans degraded due to transient conditions are automatically re-assessed every
+10 seconds (configurable via `reassess_degraded_interval_ms`). The daemon
+re-runs the same validation checks as boot reconciliation for each recoverable
+fan:
+
+- **TempSourceMissing** — sensor may have reappeared
+- **StaleSensorData** — data flow may have resumed
+- **ControlModeUnavailable** — control mode may have become available again
+
+If a fan passes all checks, it is recovered: the degraded state is cleared,
+the fan is re-claimed into the `OwnedFanSet`, and a new control task is
+started. The PID controller takes over directly from the PWM=255 fallback
+value that was written when the fan was degraded.
+
+Non-transient reasons (`FanMissing`, `FanNoLongerEnrollable`) are never
+re-assessed — they require a daemon restart or manual re-apply.
 
 ### Layer 4 — Boot Reconciliation (Daemon Restart)
 
@@ -91,6 +110,7 @@ has an up-to-date view of which fans need recovery.
 | **Daemon upgraded (package update)** | prerm stops daemon → graceful shutdown path → fans at PWM 255 → postinst starts new daemon → boot reconciliation. |
 | **Hardware disappears mid-run** | Control task detects write failure → writes targeted fallback → releases ownership → marks degraded → other fans continue. |
 | **Sensor disappears mid-run** | Sample interval fails to read temp → `degrade_and_stop()` → fan gets fallback → control task terminates. |
+| **Sensor temporarily disconnects** | Control task detects missing sensor → writes fallback PWM=255 for affected fan → marks fan degraded → re-assessment loop checks every 10s → sensor returns → fan recovered and PID control resumes. |
 | **System loses power** | Hardware reverts to BIOS fan control (safe). On next boot, daemon starts and reconciles. |
 
 ---
@@ -114,3 +134,4 @@ has an up-to-date view of which fans need recovery.
 4. **Fallback always attempts `pwm_enable=1` (manual) before `pwm=255`**
 5. **Partial fallback is OK** — if some fans fail to write, others still get max
 6. **Config version check rejects future schema versions** (prevents data corruption)
+7. **Degraded fans with transient causes are re-assessed every `reassess_degraded_interval_ms`** — they do not remain permanently degraded if the underlying condition resolves

@@ -230,6 +230,91 @@ fn temp_source_in_snapshot(snapshot: &InventorySnapshot, temp_id: &str) -> bool 
         .any(|t| t.id == temp_id)
 }
 
+/// Result of re-assessing a single degraded fan against the current inventory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ReassessOutcome {
+    /// The fan passes all checks and can be restored to managed control.
+    Recoverable {
+        fan_id: String,
+        control_mode: ControlMode,
+        temp_sources: Vec<String>,
+    },
+    /// The fan still fails at least one check and must remain degraded.
+    StillDegraded {
+        fan_id: String,
+        reason: DegradedReason,
+    },
+}
+
+/// Re-assess a single degraded fan against the current inventory.
+///
+/// This runs the same per-fan checks as `reconcile_applied_config` but for
+/// a single fan entry. Used by the periodic re-assessment loop to determine
+/// whether a degraded fan has become eligible for recovery.
+///
+/// The checks are:
+/// 1. Fan still exists in inventory
+/// 2. Fan's support state is Available
+/// 3. Configured control mode is still supported
+/// 4. All referenced temperature sources still exist
+pub fn reassess_single_fan(
+    fan_id: &str,
+    applied_entry: &AppliedFanEntry,
+    snapshot: &InventorySnapshot,
+) -> ReassessOutcome {
+    let Some(fan) = find_fan_in_snapshot(snapshot, fan_id) else {
+        return ReassessOutcome::StillDegraded {
+            fan_id: fan_id.to_string(),
+            reason: DegradedReason::FanMissing {
+                fan_id: fan_id.to_string(),
+            },
+        };
+    };
+
+    if fan.support_state != SupportState::Available {
+        let reason = fan
+            .support_reason
+            .clone()
+            .unwrap_or_else(|| "unsupported hardware".to_string());
+        return ReassessOutcome::StillDegraded {
+            fan_id: fan_id.to_string(),
+            reason: DegradedReason::FanNoLongerEnrollable {
+                fan_id: fan_id.to_string(),
+                support_state: fan.support_state,
+                reason,
+            },
+        };
+    }
+
+    if !fan.control_modes.contains(&applied_entry.control_mode) {
+        return ReassessOutcome::StillDegraded {
+            fan_id: fan_id.to_string(),
+            reason: DegradedReason::ControlModeUnavailable {
+                fan_id: fan_id.to_string(),
+                mode: applied_entry.control_mode,
+            },
+        };
+    }
+
+    for temp_id in &applied_entry.temp_sources {
+        if !temp_source_in_snapshot(snapshot, temp_id) {
+            return ReassessOutcome::StillDegraded {
+                fan_id: fan_id.to_string(),
+                reason: DegradedReason::TempSourceMissing {
+                    fan_id: fan_id.to_string(),
+                    temp_id: temp_id.clone(),
+                },
+            };
+        }
+    }
+
+    ReassessOutcome::Recoverable {
+        fan_id: fan_id.to_string(),
+        control_mode: applied_entry.control_mode,
+        temp_sources: applied_entry.temp_sources.clone(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Runtime ownership tracking
 // ---------------------------------------------------------------------------
@@ -931,12 +1016,10 @@ mod tests {
         }
 
         // Reconciled config should contain the fan.
-        assert!(
-            result
-                .reconciled_config
-                .fans
-                .contains_key("hwmon-test-0000000000000001-fan1")
-        );
+        assert!(result
+            .reconciled_config
+            .fans
+            .contains_key("hwmon-test-0000000000000001-fan1"));
     }
 
     #[test]
@@ -1089,18 +1172,14 @@ mod tests {
         assert_eq!(result.degraded_reasons.len(), 1);
 
         // Reconciled config should only have the real fan.
-        assert!(
-            result
-                .reconciled_config
-                .fans
-                .contains_key("hwmon-test-0000000000000001-fan1")
-        );
-        assert!(
-            !result
-                .reconciled_config
-                .fans
-                .contains_key("hwmon-ghost-0000000000000003-fan1")
-        );
+        assert!(result
+            .reconciled_config
+            .fans
+            .contains_key("hwmon-test-0000000000000001-fan1"));
+        assert!(!result
+            .reconciled_config
+            .fans
+            .contains_key("hwmon-ghost-0000000000000003-fan1"));
     }
 
     // --- Ownership tests ---
@@ -1282,11 +1361,9 @@ mod tests {
             }
             _ => panic!("expected Managed status for fan1"),
         }
-        assert!(
-            state
-                .owned_fans
-                .contains(&"hwmon-test-0000000000000001-fan1".to_string())
-        );
+        assert!(state
+            .owned_fans
+            .contains(&"hwmon-test-0000000000000001-fan1".to_string()));
     }
 
     #[test]
@@ -1408,12 +1485,120 @@ mod tests {
             incident.affected_fans,
             vec!["hwmon-test-0000000000000001-fan1"]
         );
-        assert!(
-            !incident
-                .affected_fans
-                .iter()
-                .any(|fan| fan == "fan-unmanaged")
+        assert!(!incident
+            .affected_fans
+            .iter()
+            .any(|fan| fan == "fan-unmanaged"));
+    }
+
+    #[test]
+    fn reassess_single_fan_recovers_when_temp_source_returns() {
+        let entry = applied_fan_entry(vec!["hwmon-test-0000000000000001-temp1".to_string()]);
+        let mut snapshot_no_temp = test_snapshot();
+        snapshot_no_temp.devices[0].temperatures.clear();
+
+        let result = reassess_single_fan(
+            "hwmon-test-0000000000000001-fan1",
+            &entry,
+            &snapshot_no_temp,
         );
+        match result {
+            ReassessOutcome::StillDegraded {
+                fan_id,
+                reason: DegradedReason::TempSourceMissing { .. },
+            } => {
+                assert_eq!(fan_id, "hwmon-test-0000000000000001-fan1");
+            }
+            other => panic!("expected StillDegraded(TempSourceMissing), got {other:?}"),
+        }
+
+        let snapshot_with_temp = test_snapshot();
+        let result = reassess_single_fan(
+            "hwmon-test-0000000000000001-fan1",
+            &entry,
+            &snapshot_with_temp,
+        );
+        match result {
+            ReassessOutcome::Recoverable {
+                fan_id,
+                control_mode,
+                temp_sources,
+            } => {
+                assert_eq!(fan_id, "hwmon-test-0000000000000001-fan1");
+                assert_eq!(control_mode, ControlMode::Pwm);
+                assert_eq!(
+                    temp_sources,
+                    vec!["hwmon-test-0000000000000001-temp1".to_string()]
+                );
+            }
+            other => panic!("expected Recoverable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reassess_single_fan_still_degraded_when_fan_missing() {
+        let entry = applied_fan_entry(vec!["hwmon-test-0000000000000001-temp1".to_string()]);
+        let snapshot_no_fan = InventorySnapshot {
+            devices: vec![HwmonDevice {
+                id: "hwmon-test-0000000000000001".to_string(),
+                name: "testchip".to_string(),
+                sysfs_path: "/sys/class/hwmon/hwmon0".to_string(),
+                stable_identity: "/sys/devices/platform/testchip".to_string(),
+                temperatures: vec![TemperatureSensor {
+                    id: "hwmon-test-0000000000000001-temp1".to_string(),
+                    channel: 1,
+                    label: Some("CPU".to_string()),
+                    friendly_name: None,
+                    input_millidegrees_celsius: Some(45000),
+                }],
+                fans: vec![],
+            }],
+        };
+
+        let result =
+            reassess_single_fan("hwmon-test-0000000000000001-fan1", &entry, &snapshot_no_fan);
+        match result {
+            ReassessOutcome::StillDegraded {
+                fan_id,
+                reason: DegradedReason::FanMissing { .. },
+            } => {
+                assert_eq!(fan_id, "hwmon-test-0000000000000001-fan1");
+            }
+            other => panic!("expected StillDegraded(FanMissing), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reassess_single_fan_recovers_when_control_mode_available() {
+        let entry = applied_fan_entry(vec!["hwmon-test-0000000000000001-temp1".to_string()]);
+        let mut snapshot_no_pwm = test_snapshot();
+        snapshot_no_pwm.devices[0].fans[0].control_modes.clear();
+
+        let result =
+            reassess_single_fan("hwmon-test-0000000000000001-fan1", &entry, &snapshot_no_pwm);
+        match result {
+            ReassessOutcome::StillDegraded {
+                fan_id,
+                reason: DegradedReason::ControlModeUnavailable { mode, .. },
+            } => {
+                assert_eq!(fan_id, "hwmon-test-0000000000000001-fan1");
+                assert_eq!(mode, ControlMode::Pwm);
+            }
+            other => panic!("expected StillDegraded(ControlModeUnavailable), got {other:?}"),
+        }
+
+        let snapshot_with_pwm = test_snapshot();
+        let result = reassess_single_fan(
+            "hwmon-test-0000000000000001-fan1",
+            &entry,
+            &snapshot_with_pwm,
+        );
+        match result {
+            ReassessOutcome::Recoverable { fan_id, .. } => {
+                assert_eq!(fan_id, "hwmon-test-0000000000000001-fan1");
+            }
+            other => panic!("expected Recoverable, got {other:?}"),
+        }
     }
 
     #[test]

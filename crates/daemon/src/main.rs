@@ -39,6 +39,8 @@ const BUS_PATH_INVENTORY: &str = "/org/kde/FanControl";
 const BUS_PATH_LIFECYCLE: &str = "/org/kde/FanControl/Lifecycle";
 const BUS_PATH_CONTROL: &str = "/org/kde/FanControl/Control";
 
+const MAX_NAME_LENGTH: usize = 128;
+
 fn state_dir() -> PathBuf {
     app_state_dir()
 }

@@ -149,6 +149,7 @@ Conventions not yet established. Will populate as patterns emerge during develop
 See [docs/architecture.md](docs/architecture.md) for the full system architecture.
 See [docs/dbus-api.md](docs/dbus-api.md) for the DBus interface contract.
 See [docs/safety-model.md](docs/safety-model.md) for the fail-safe design.
+See [docs/SECURITY.md](docs/SECURITY.md) for the security analysis and remediation plan.
 <!-- GSD:architecture-end -->
 
 <!-- GSD:skills-start source:skills/ -->
@@ -178,7 +179,7 @@ Do not make direct repo edits outside a GSD workflow unless the user explicitly 
 
 | Crate | Path | Language | Purpose | Key Types |
 |-------|------|----------|---------|-----------|
-| core | `crates/core/` | Rust | Shared types and logic | `AppConfig`, `DraftConfig`, `AppliedConfig`, `DraftFanEntry`, `AppliedFanEntry`, `InventorySnapshot`, `HwmonDevice`, `FanChannel`, `TemperatureSensor`, `PidController`, `PidGains`, `PidOutput`, `AggregationFn`, `ControlCadence`, `ActuatorPolicy`, `PidLimits`, `AutoTuneProposal`, `DegradedState`, `DegradedReason`, `LifecycleEventLog`, `ValidationResult`, `ValidationError`, `FallbackIncident`, `OwnedFanSet`, `RuntimeState`, `ControlRuntimeSnapshot`, `FanRuntimeStatus` |
+| core | `crates/core/` | Rust | Shared types and logic | `AppConfig`, `DraftConfig`, `AppliedConfig`, `DraftFanEntry`, `AppliedFanEntry`, `InventorySnapshot`, `HwmonDevice`, `FanChannel`, `TemperatureSensor`, `PidController`, `PidGains`, `PidOutput`, `AggregationFn`, `ControlCadence`, `ActuatorPolicy`, `PidLimits`, `AutoTuneProposal`, `DegradedState`, `DegradedReason`, `LifecycleEventLog`, `ValidationResult`, `ValidationError`, `FallbackIncident`, `OwnedFanSet`, `RuntimeState`, `ControlRuntimeSnapshot`, `FanRuntimeStatus`, `ReassessOutcome` |
 | daemon | `crates/daemon/` | Rust | Root DBus service | `ControlSupervisor`, `ControlIface`, `LifecycleIface`, `InventoryIface`, `AutoTuneExecutionState` |
 | cli | `crates/cli/` | Rust | DBus client | `InventoryProxy`, `LifecycleProxy`, `ControlProxy` (zbus generate) |
 | gui | `gui/` | C++/QML | KDE desktop app | `DaemonInterface`, `StatusMonitor`, `FanListModel`, `SensorListModel`, `DraftModel`, `LifecycleEventModel` |
@@ -217,6 +218,7 @@ Do not make direct repo edits outside a GSD workflow unless the user explicitly 
 | `AppliedFanEntry` | `crates/core/src/config.rs` | 150 |
 | `ValidationError` | `crates/core/src/config.rs` | 391 |
 | `DegradedReason` | `crates/core/src/config.rs` | 805 |
+| `ReassessOutcome` | `crates/core/src/lifecycle.rs` | 233 |
 | `FallbackIncident` | `crates/core/src/config.rs` | 237 |
 | `PidController` | `crates/core/src/control.rs` | 163 |
 | `PidGains` | `crates/core/src/control.rs` | 43 |
@@ -277,7 +279,8 @@ RUST_LOG=kde_fan_control=debug cargo run -p kde-fan-control-daemon -- --session-
 | [README.md](README.md) | Project front door — features, quick start, CLI summary |
 | [docs/architecture.md](docs/architecture.md) | System architecture — components, control loops, config lifecycle |
 | [docs/dbus-api.md](docs/dbus-api.md) | DBus interface contract — methods, signals, JSON schemas |
-| [docs/safety-model.md](docs/safety-model.md) | Fail-safe design — 4 fallback layers, invariant summary |
+| [docs/safety-model.md](docs/safety-model.md) | Fail-safe design — fallback layers, re-assessment, invariant summary |
+| [docs/SECURITY.md](docs/SECURITY.md) | Security analysis — threat model, findings, remediation plan |
 | [docs/building.md](docs/building.md) | Build & development guide — prerequisites, running, testing |
 | [docs/cli-reference.md](docs/cli-reference.md) | Full CLI reference — all 16 commands with examples |
 | [docs/configuration.md](docs/configuration.md) | Config file reference — TOML schema, field docs, examples |
