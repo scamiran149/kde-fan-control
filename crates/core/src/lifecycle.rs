@@ -496,9 +496,18 @@ pub fn write_fallback_for_owned(owned: &OwnedFanSet) -> FallbackResult {
             }
         };
 
-        // The pwm path is like /sys/class/hwmon/hwmon0/pwm1
-        // Derive the pwm_enable path from it.
-        let pwm_enable_path = format!("{}_enable", pwm_path);
+        // Use PathBuf to derive the pwm_enable path from the pwm path, replacing
+        // just the filename component rather than blindly appending to the string.
+        // This avoids constructing malformed paths if pwm_path contains unexpected
+        // trailing content (e.g. whitespace or path separators).
+        let pwm_enable_path = {
+            let path = std::path::Path::new(&pwm_path);
+            let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+            let enable_name = format!("{file_name}_enable");
+            path.with_file_name(enable_name)
+                .to_string_lossy()
+                .to_string()
+        };
 
         // Step 1: Write pwm_enable = 1 (manual mode)
         if let Err(e) = std::fs::write(&pwm_enable_path, PWM_ENABLE_MANUAL.to_string()) {
@@ -551,7 +560,16 @@ pub fn write_fallback_single(fan_id: &str, owned: &OwnedFanSet) -> Result<(), St
         None => return Err("no sysfs path recorded for owned fan".into()),
     };
 
-    let pwm_enable_path = format!("{}_enable", pwm_path);
+    // Use PathBuf to derive the pwm_enable path from the pwm path, replacing
+    // just the filename component rather than blindly appending to the string.
+    let pwm_enable_path = {
+        let path = std::path::Path::new(&pwm_path);
+        let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+        let enable_name = format!("{file_name}_enable");
+        path.with_file_name(enable_name)
+            .to_string_lossy()
+            .to_string()
+    };
 
     // Set manual mode
     if let Err(e) = std::fs::write(&pwm_enable_path, PWM_ENABLE_MANUAL.to_string()) {
