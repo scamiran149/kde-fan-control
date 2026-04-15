@@ -58,9 +58,9 @@
   </screenshots>
 
   <releases>
-    <release version="1.0.1" date="2026-04-14" type="stable">
+    <release version="1.0.2" date="2026-04-14" type="stable">
       <description>
-        <p>Packaging and security hardening update with improved polkit handling, fallback behavior, and local install integration.</p>
+        <p>Packaging follow-up release that fixes installed application icon naming and refreshes bundled product diagrams.</p>
       </description>
     </release>
   </releases>

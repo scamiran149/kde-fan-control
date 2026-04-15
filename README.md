@@ -163,14 +163,13 @@ Most commands accept `--format json`, and many accept `--detail` for expanded ou
 
 ## Project Status
 
-**v1.0.1 shipped** on 2026-04-14.
+**v1.0.2 shipped** on 2026-04-14.
 
 Current release highlights:
 
-- systemd and local install integration
-- polkit authorization and GUI unlock flow
-- fallback helper hardening and owned-fan persistence fixes
-- safer degradation and recovery behavior
+- packaged icon naming aligned with `org.kde.fancontrol`
+- refreshed architecture, lifecycle, and safety diagrams
+- prior `v1.0.1` systemd, polkit, and fallback hardening improvements remain included
 
 ## License
 
