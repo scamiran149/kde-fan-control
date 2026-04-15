@@ -1,2 +1,0 @@
-summary: Check integration with systemd
-test: ./test.sh

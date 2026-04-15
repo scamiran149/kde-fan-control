@@ -1,5 +1,0 @@
-summary: Tests for polkit's pkexec utility
-test: ./test.sh
-require:
-  - expect
-  - sudo

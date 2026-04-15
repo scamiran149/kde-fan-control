@@ -1,6 +1,0 @@
-{
-global:
-  polkit_*;
-local:
-  *;
-};
