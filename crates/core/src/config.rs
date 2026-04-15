@@ -21,8 +21,8 @@ use crate::control::{ActuatorPolicy, AggregationFn, ControlCadence, PidGains, Pi
 use crate::inventory::ControlMode;
 
 pub use crate::validation::{
-    ValidationError, ValidationResult, apply_draft, find_fan_by_id, temp_source_exists,
-    validate_draft,
+    apply_draft, find_fan_by_id, temp_source_exists, validate_draft, ValidationError,
+    ValidationResult,
 };
 
 /// Current schema version for the daemon-owned configuration file.
@@ -129,6 +129,7 @@ pub struct DraftConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DraftFanEntry {
     /// Whether the daemon should manage this fan when the draft is applied.
+    #[serde(default)]
     pub managed: bool,
 
     /// The control mode the user selected for this fan.
@@ -513,11 +514,9 @@ mod tests {
         let serialized = toml::to_string_pretty(&config).unwrap();
         let deserialized: AppConfig = toml::from_str(&serialized).unwrap();
 
-        assert!(
-            deserialized
-                .draft_fan("hwmon-test-0000000000000001-fan1")
-                .is_some()
-        );
+        assert!(deserialized
+            .draft_fan("hwmon-test-0000000000000001-fan1")
+            .is_some());
         let entry = deserialized
             .draft_fan("hwmon-test-0000000000000001-fan1")
             .unwrap();
@@ -603,11 +602,9 @@ mod tests {
 
         let result = validate_draft(&draft, &snapshot);
         assert!(result.all_passed());
-        assert!(
-            result
-                .enrollable
-                .contains(&"hwmon-test-0000000000000001-fan1".to_string())
-        );
+        assert!(result
+            .enrollable
+            .contains(&"hwmon-test-0000000000000001-fan1".to_string()));
         assert!(result.rejected.is_empty());
     }
 
@@ -725,11 +722,9 @@ mod tests {
             apply_draft(&draft, &snapshot, "2026-04-11T12:00:00Z".to_string(), None);
 
         // Only the valid fan should appear in applied.
-        assert!(
-            applied
-                .fans
-                .contains_key("hwmon-test-0000000000000001-fan1")
-        );
+        assert!(applied
+            .fans
+            .contains_key("hwmon-test-0000000000000001-fan1"));
         assert!(!applied.fans.contains_key("ghost-fan"));
         assert_eq!(result.rejected.len(), 1);
     }
@@ -1088,86 +1083,68 @@ version = 999
 
     #[test]
     fn pid_gains_is_finite_method() {
-        assert!(
-            PidGains {
-                kp: 1.0,
-                ki: 0.5,
-                kd: 0.1
-            }
-            .is_finite()
-        );
-        assert!(
-            PidGains {
-                kp: -1.0,
-                ki: 0.0,
-                kd: 100.0
-            }
-            .is_finite()
-        );
-        assert!(
-            !PidGains {
-                kp: f64::NAN,
-                ki: 1.0,
-                kd: 1.0
-            }
-            .is_finite()
-        );
-        assert!(
-            !PidGains {
-                kp: 1.0,
-                ki: f64::INFINITY,
-                kd: 1.0
-            }
-            .is_finite()
-        );
-        assert!(
-            !PidGains {
-                kp: 1.0,
-                ki: 1.0,
-                kd: f64::NEG_INFINITY
-            }
-            .is_finite()
-        );
+        assert!(PidGains {
+            kp: 1.0,
+            ki: 0.5,
+            kd: 0.1
+        }
+        .is_finite());
+        assert!(PidGains {
+            kp: -1.0,
+            ki: 0.0,
+            kd: 100.0
+        }
+        .is_finite());
+        assert!(!PidGains {
+            kp: f64::NAN,
+            ki: 1.0,
+            kd: 1.0
+        }
+        .is_finite());
+        assert!(!PidGains {
+            kp: 1.0,
+            ki: f64::INFINITY,
+            kd: 1.0
+        }
+        .is_finite());
+        assert!(!PidGains {
+            kp: 1.0,
+            ki: 1.0,
+            kd: f64::NEG_INFINITY
+        }
+        .is_finite());
     }
 
     #[test]
     fn pid_limits_is_finite_method() {
-        assert!(
-            PidLimits {
-                integral_min: -500.0,
-                integral_max: 500.0,
-                derivative_min: -5.0,
-                derivative_max: 5.0,
-            }
-            .is_finite()
-        );
-        assert!(
-            !PidLimits {
-                integral_min: f64::NAN,
-                integral_max: 500.0,
-                derivative_min: -5.0,
-                derivative_max: 5.0,
-            }
-            .is_finite()
-        );
-        assert!(
-            !PidLimits {
-                integral_min: -500.0,
-                integral_max: f64::INFINITY,
-                derivative_min: -5.0,
-                derivative_max: 5.0,
-            }
-            .is_finite()
-        );
-        assert!(
-            !PidLimits {
-                integral_min: -500.0,
-                integral_max: 500.0,
-                derivative_min: f64::NEG_INFINITY,
-                derivative_max: 5.0,
-            }
-            .is_finite()
-        );
+        assert!(PidLimits {
+            integral_min: -500.0,
+            integral_max: 500.0,
+            derivative_min: -5.0,
+            derivative_max: 5.0,
+        }
+        .is_finite());
+        assert!(!PidLimits {
+            integral_min: f64::NAN,
+            integral_max: 500.0,
+            derivative_min: -5.0,
+            derivative_max: 5.0,
+        }
+        .is_finite());
+        assert!(!PidLimits {
+            integral_min: -500.0,
+            integral_max: f64::INFINITY,
+            derivative_min: -5.0,
+            derivative_max: 5.0,
+        }
+        .is_finite());
+        assert!(!PidLimits {
+            integral_min: -500.0,
+            integral_max: 500.0,
+            derivative_min: f64::NEG_INFINITY,
+            derivative_max: 5.0,
+        }
+        .is_finite());
     }
 
     #[test]

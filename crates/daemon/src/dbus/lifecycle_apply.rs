@@ -42,50 +42,6 @@ pub fn release_removed_owned_fans(
     failures
 }
 
-#[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use kde_fan_control_core::inventory::ControlMode;
-    use kde_fan_control_core::lifecycle::OwnedFanSet;
-
-    use crate::dbus::lifecycle_apply::release_removed_owned_fans;
-    use crate::test_support::ControlFixture;
-
-    #[test]
-    fn release_removed_owned_fans_drops_fans_not_in_next_applied_set() {
-        let fixture = ControlFixture::new();
-        fixture.write_pwm_seed("0\n");
-
-        let mut owned = OwnedFanSet::new();
-        owned.claim_fan(
-            "fan-a",
-            ControlMode::Pwm,
-            fixture.pwm_path().to_string_lossy().as_ref(),
-        );
-        owned.claim_fan("fan-b", ControlMode::Pwm, "/sys/class/hwmon/hwmon0/pwm2");
-
-        let next_owned = HashSet::from(["fan-b".to_string()]);
-        let failures = release_removed_owned_fans(&mut owned, &next_owned);
-
-        assert!(failures.is_empty());
-        assert!(!owned.owns("fan-a"));
-        assert!(owned.owns("fan-b"));
-    }
-
-    #[test]
-    fn release_removed_owned_fans_keeps_ownership_on_fallback_failure() {
-        let mut owned = OwnedFanSet::new();
-        owned.claim_fan("fan-a", ControlMode::Pwm, "/definitely/missing/pwm1");
-
-        let next_owned = HashSet::new();
-        let failures = release_removed_owned_fans(&mut owned, &next_owned);
-
-        assert_eq!(failures.len(), 1);
-        assert!(owned.owns("fan-a"));
-    }
-}
-
 impl LifecycleIface {
     pub async fn apply_draft_transaction(
         &self,
@@ -167,7 +123,7 @@ impl LifecycleIface {
         {
             let snapshot = self.snapshot.read().await;
             let mut owned = self.owned.write().await;
-            let next_owned: HashSet<_> = result.enrollable.iter().cloned().collect();
+            let next_owned: HashSet<_> = applied.fans.keys().cloned().collect();
             let release_failures = release_removed_owned_fans(&mut owned, &next_owned);
             if !release_failures.is_empty() {
                 had_rejections = true;
@@ -189,7 +145,10 @@ impl LifecycleIface {
                     });
                 }
             }
-            for fan_id in &result.enrollable {
+            for fan_id in applied.fans.keys() {
+                if owned.owns(fan_id) {
+                    continue;
+                }
                 let fan = snapshot
                     .devices
                     .iter()
@@ -246,5 +205,197 @@ impl LifecycleIface {
 
         serde_json::to_string(&result)
             .map_err(|e| fdo::Error::Failed(format!("validation serialization error: {e}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use kde_fan_control_core::config::{AppliedConfig, AppliedFanEntry, DraftConfig, DraftFanEntry, apply_draft};
+    use kde_fan_control_core::control::{
+        ActuatorPolicy, AggregationFn, ControlCadence, PidGains, PidLimits,
+    };
+    use kde_fan_control_core::inventory::{
+        ControlMode, FanChannel, HwmonDevice, InventorySnapshot, SupportState, TemperatureSensor,
+    };
+    use kde_fan_control_core::lifecycle::OwnedFanSet;
+
+    use crate::dbus::lifecycle_apply::release_removed_owned_fans;
+    use crate::test_support::ControlFixture;
+
+    fn test_applied_entry() -> AppliedFanEntry {
+        AppliedFanEntry {
+            control_mode: ControlMode::Pwm,
+            temp_sources: vec!["hwmon-test-temp1".to_string()],
+            target_temp_millidegrees: 50_000,
+            aggregation: AggregationFn::Average,
+            pid_gains: PidGains { kp: 1.0, ki: 0.0, kd: 0.0 },
+            cadence: ControlCadence {
+                sample_interval_ms: 500,
+                control_interval_ms: 1000,
+                write_interval_ms: 2000,
+            },
+            deadband_millidegrees: 1000,
+            actuator_policy: ActuatorPolicy {
+                output_min_percent: 0.0,
+                output_max_percent: 100.0,
+                pwm_min: 0,
+                pwm_max: 255,
+                startup_kick_percent: 35.0,
+                startup_kick_ms: 1000,
+            },
+            pid_limits: PidLimits::default(),
+        }
+    }
+
+    fn multi_fan_snapshot() -> InventorySnapshot {
+        InventorySnapshot {
+            devices: vec![HwmonDevice {
+                id: "hwmon-test".to_string(),
+                name: "testchip".to_string(),
+                sysfs_path: "/sys/class/hwmon/hwmon0".to_string(),
+                stable_identity: "/sys/devices/platform/testchip".to_string(),
+                temperatures: vec![TemperatureSensor {
+                    id: "hwmon-test-temp1".to_string(),
+                    channel: 1,
+                    label: Some("CPU".to_string()),
+                    friendly_name: None,
+                    input_millidegrees_celsius: Some(45_000),
+                }],
+                fans: vec![
+                    FanChannel {
+                        id: "fan-a".to_string(),
+                        channel: 1,
+                        label: Some("Fan A".to_string()),
+                        friendly_name: None,
+                        rpm_feedback: true,
+                        current_rpm: Some(1200),
+                        control_modes: vec![ControlMode::Pwm],
+                        support_state: SupportState::Available,
+                        support_reason: None,
+                    },
+                    FanChannel {
+                        id: "fan-b".to_string(),
+                        channel: 2,
+                        label: Some("Fan B".to_string()),
+                        friendly_name: None,
+                        rpm_feedback: true,
+                        current_rpm: Some(800),
+                        control_modes: vec![ControlMode::Pwm],
+                        support_state: SupportState::Available,
+                        support_reason: None,
+                    },
+                    FanChannel {
+                        id: "fan-c".to_string(),
+                        channel: 3,
+                        label: Some("Fan C".to_string()),
+                        friendly_name: None,
+                        rpm_feedback: true,
+                        current_rpm: Some(900),
+                        control_modes: vec![ControlMode::Pwm],
+                        support_state: SupportState::Available,
+                        support_reason: None,
+                    },
+                ],
+            }],
+        }
+    }
+
+    #[test]
+    fn release_removed_owned_fans_drops_fans_not_in_next_applied_set() {
+        let fixture = ControlFixture::new();
+        fixture.write_pwm_seed("0\n");
+
+        let mut owned = OwnedFanSet::new();
+        owned.claim_fan(
+            "fan-a",
+            ControlMode::Pwm,
+            fixture.pwm_path().to_string_lossy().as_ref(),
+        );
+        owned.claim_fan("fan-b", ControlMode::Pwm, "/sys/class/hwmon/hwmon0/pwm2");
+
+        let next_owned = HashSet::from(["fan-b".to_string()]);
+        let failures = release_removed_owned_fans(&mut owned, &next_owned);
+
+        assert!(failures.is_empty());
+        assert!(!owned.owns("fan-a"));
+        assert!(owned.owns("fan-b"));
+    }
+
+    #[test]
+    fn release_removed_owned_fans_keeps_ownership_on_fallback_failure() {
+        let mut owned = OwnedFanSet::new();
+        owned.claim_fan("fan-a", ControlMode::Pwm, "/definitely/missing/pwm1");
+
+        let next_owned = HashSet::new();
+        let failures = release_removed_owned_fans(&mut owned, &next_owned);
+
+        assert_eq!(failures.len(), 1);
+        assert!(owned.owns("fan-a"));
+    }
+
+    #[test]
+    fn apply_draft_ownership_uses_applied_fans_not_enrollable() {
+        let snapshot = multi_fan_snapshot();
+
+        let mut draft = DraftConfig::default();
+        draft.fans.insert(
+            "fan-a".to_string(),
+            DraftFanEntry {
+                managed: true,
+                control_mode: Some(ControlMode::Pwm),
+                temp_sources: vec!["hwmon-test-temp1".to_string()],
+                target_temp_millidegrees: Some(60_000),
+                ..Default::default()
+            },
+        );
+
+        let previous = AppliedConfig {
+            fans: [
+                ("fan-a".to_string(), test_applied_entry()),
+                ("fan-b".to_string(), test_applied_entry()),
+                ("fan-c".to_string(), test_applied_entry()),
+            ]
+            .into(),
+            applied_at: Some("2026-04-10T12:00:00Z".to_string()),
+        };
+
+        let (applied, result) = apply_draft(
+            &draft,
+            &snapshot,
+            "2026-04-15T12:00:00Z".to_string(),
+            Some(&previous),
+        );
+
+        assert!(result.all_passed());
+        assert_eq!(
+            result.enrollable.len(),
+            1,
+            "enrollable only contains draft-validated fan-a"
+        );
+        assert_eq!(
+            applied.fans.len(),
+            3,
+            "applied config preserves fan-b and fan-c from previous"
+        );
+
+        let next_owned_from_enrollable: HashSet<_> = result.enrollable.iter().cloned().collect();
+        let next_owned_from_applied: HashSet<_> = applied.fans.keys().cloned().collect();
+
+        assert_eq!(
+            next_owned_from_enrollable,
+            HashSet::from(["fan-a".to_string()]),
+            "OLD BUG: enrollable-only ownership would lose fan-b and fan-c"
+        );
+        assert_eq!(
+            next_owned_from_applied,
+            HashSet::from([
+                "fan-a".to_string(),
+                "fan-b".to_string(),
+                "fan-c".to_string(),
+            ]),
+            "FIX: applied.fans.keys() preserves all managed fans"
+        );
     }
 }

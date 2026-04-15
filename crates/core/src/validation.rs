@@ -463,3 +463,260 @@ pub fn apply_draft(
 
     (applied, result)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::config::{
+        AppliedConfig, AppliedFanEntry, DraftConfig, DraftFanEntry,
+    };
+    use crate::control::{
+        ActuatorPolicy, AggregationFn, ControlCadence, PidGains, PidLimits,
+    };
+    use crate::inventory::{
+        ControlMode, FanChannel, HwmonDevice, InventorySnapshot, SupportState, TemperatureSensor,
+    };
+    use super::apply_draft;
+
+    fn test_applied_entry() -> AppliedFanEntry {
+        AppliedFanEntry {
+            control_mode: ControlMode::Pwm,
+            temp_sources: vec!["hwmon-test-0000000000000001-temp1".to_string()],
+            target_temp_millidegrees: 50_000,
+            aggregation: AggregationFn::Average,
+            pid_gains: PidGains {
+                kp: 1.0,
+                ki: 0.0,
+                kd: 0.0,
+            },
+            cadence: ControlCadence {
+                sample_interval_ms: 500,
+                control_interval_ms: 1000,
+                write_interval_ms: 2000,
+            },
+            deadband_millidegrees: 1000,
+            actuator_policy: ActuatorPolicy {
+                output_min_percent: 0.0,
+                output_max_percent: 100.0,
+                pwm_min: 0,
+                pwm_max: 255,
+                startup_kick_percent: 35.0,
+                startup_kick_ms: 1000,
+            },
+            pid_limits: PidLimits::default(),
+        }
+    }
+
+    fn multi_fan_snapshot() -> InventorySnapshot {
+        InventorySnapshot {
+            devices: vec![HwmonDevice {
+                id: "hwmon-test-0000000000000001".to_string(),
+                name: "testchip".to_string(),
+                sysfs_path: "/sys/class/hwmon/hwmon0".to_string(),
+                stable_identity: "/sys/devices/platform/testchip".to_string(),
+                temperatures: vec![TemperatureSensor {
+                    id: "hwmon-test-0000000000000001-temp1".to_string(),
+                    channel: 1,
+                    label: Some("CPU".to_string()),
+                    friendly_name: None,
+                    input_millidegrees_celsius: Some(45_000),
+                }],
+                fans: vec![
+                    FanChannel {
+                        id: "hwmon-test-0000000000000001-fan1".to_string(),
+                        channel: 1,
+                        label: Some("CPU Fan".to_string()),
+                        friendly_name: None,
+                        rpm_feedback: true,
+                        current_rpm: Some(1200),
+                        control_modes: vec![ControlMode::Pwm],
+                        support_state: SupportState::Available,
+                        support_reason: None,
+                    },
+                    FanChannel {
+                        id: "hwmon-test-0000000000000001-fan2".to_string(),
+                        channel: 2,
+                        label: Some("Case Fan".to_string()),
+                        friendly_name: None,
+                        rpm_feedback: true,
+                        current_rpm: Some(800),
+                        control_modes: vec![ControlMode::Pwm],
+                        support_state: SupportState::Available,
+                        support_reason: None,
+                    },
+                    FanChannel {
+                        id: "hwmon-test-0000000000000001-fan3".to_string(),
+                        channel: 3,
+                        label: Some("GPU Fan".to_string()),
+                        friendly_name: None,
+                        rpm_feedback: true,
+                        current_rpm: Some(900),
+                        control_modes: vec![ControlMode::Pwm],
+                        support_state: SupportState::Available,
+                        support_reason: None,
+                    },
+                ],
+            }],
+        }
+    }
+
+    fn managed_draft(_fan_id: &str) -> DraftFanEntry {
+        DraftFanEntry {
+            managed: true,
+            control_mode: Some(ControlMode::Pwm),
+            temp_sources: vec!["hwmon-test-0000000000000001-temp1".to_string()],
+            target_temp_millidegrees: Some(60_000),
+            aggregation: None,
+            pid_gains: None,
+            cadence: None,
+            deadband_millidegrees: None,
+            actuator_policy: None,
+            pid_limits: None,
+        }
+    }
+
+    #[test]
+    fn apply_draft_preserves_previous_applied_fans_absent_from_draft() {
+        let snapshot = multi_fan_snapshot();
+
+        let mut draft = DraftConfig::default();
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            managed_draft("hwmon-test-0000000000000001-fan1"),
+        );
+
+        let previous = AppliedConfig {
+            fans: [
+                ("hwmon-test-0000000000000001-fan1".to_string(), test_applied_entry()),
+                ("hwmon-test-0000000000000001-fan2".to_string(), test_applied_entry()),
+                ("hwmon-test-0000000000000001-fan3".to_string(), test_applied_entry()),
+            ]
+            .into(),
+            applied_at: Some("2026-04-10T12:00:00Z".to_string()),
+        };
+
+        let (applied, result) = apply_draft(
+            &draft,
+            &snapshot,
+            "2026-04-15T12:00:00Z".to_string(),
+            Some(&previous),
+        );
+
+        assert!(result.all_passed(), "draft validation should pass");
+        assert_eq!(
+            applied.fans.len(),
+            3,
+            "applied config should contain all 3 fans (1 from draft + 2 preserved)"
+        );
+        assert!(
+            applied.fans.contains_key("hwmon-test-0000000000000001-fan1"),
+            "fan1 from draft should be in applied"
+        );
+        assert!(
+            applied.fans.contains_key("hwmon-test-0000000000000001-fan2"),
+            "fan2 preserved from previous should be in applied"
+        );
+        assert!(
+            applied.fans.contains_key("hwmon-test-0000000000000001-fan3"),
+            "fan3 preserved from previous should be in applied"
+        );
+
+        let draft_entry = applied
+            .fans
+            .get("hwmon-test-0000000000000001-fan1")
+            .unwrap();
+        assert_eq!(
+            draft_entry.target_temp_millidegrees, 60_000,
+            "fan1 should use draft target temp"
+        );
+
+        let preserved_entry = applied
+            .fans
+            .get("hwmon-test-0000000000000001-fan2")
+            .unwrap();
+        assert_eq!(
+            preserved_entry.target_temp_millidegrees, 50_000,
+            "fan2 should use previous applied target temp"
+        );
+    }
+
+    #[test]
+    fn apply_draft_enrollable_only_lists_draft_fans_not_preserved() {
+        let snapshot = multi_fan_snapshot();
+
+        let mut draft = DraftConfig::default();
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            managed_draft("hwmon-test-0000000000000001-fan1"),
+        );
+
+        let previous = AppliedConfig {
+            fans: [
+                ("hwmon-test-0000000000000001-fan2".to_string(), test_applied_entry()),
+                ("hwmon-test-0000000000000001-fan3".to_string(), test_applied_entry()),
+            ]
+            .into(),
+            applied_at: Some("2026-04-10T12:00:00Z".to_string()),
+        };
+
+        let (_, result) = apply_draft(
+            &draft,
+            &snapshot,
+            "2026-04-15T12:00:00Z".to_string(),
+            Some(&previous),
+        );
+
+        assert!(result.all_passed());
+        assert_eq!(
+            result.enrollable.len(),
+            1,
+            "enrollable should only contain draft-validated fans, not preserved ones"
+        );
+        assert_eq!(
+            result.enrollable[0], "hwmon-test-0000000000000001-fan1",
+            "enrollable should contain the draft fan"
+        );
+    }
+
+    #[test]
+    fn apply_draft_does_not_preserve_fans_present_in_draft_as_unmanaged() {
+        let snapshot = multi_fan_snapshot();
+
+        let mut draft = DraftConfig::default();
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            managed_draft("hwmon-test-0000000000000001-fan1"),
+        );
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan2".to_string(),
+            DraftFanEntry {
+                managed: false,
+                ..Default::default()
+            },
+        );
+
+        let previous = AppliedConfig {
+            fans: [
+                ("hwmon-test-0000000000000001-fan1".to_string(), test_applied_entry()),
+                ("hwmon-test-0000000000000001-fan2".to_string(), test_applied_entry()),
+            ]
+            .into(),
+            applied_at: Some("2026-04-10T12:00:00Z".to_string()),
+        };
+
+        let (applied, _) = apply_draft(
+            &draft,
+            &snapshot,
+            "2026-04-15T12:00:00Z".to_string(),
+            Some(&previous),
+        );
+
+        assert!(
+            applied.fans.contains_key("hwmon-test-0000000000000001-fan1"),
+            "managed draft fan should be in applied"
+        );
+        assert!(
+            !applied.fans.contains_key("hwmon-test-0000000000000001-fan2"),
+            "fan explicitly unmanaged in draft should NOT be preserved"
+        );
+    }
+}
