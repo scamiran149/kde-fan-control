@@ -32,9 +32,12 @@ pub fn require_test_authorized(authorized: bool) -> fdo::Result<()> {
     }
 }
 
-/// Read process start time from `/proc/<pid>/stat` and convert to
-/// microseconds since boot (as required by polkit's start-time field).
-/// Returns `None` if the stat file cannot be parsed.
+/// Read process start time from `/proc/<pid>/stat`.
+///
+/// Returns the raw clock-tick value (the `starttime` field from procfs,
+/// field 22 after the closing paren of comm). Polkit compares this value
+/// directly against what it reads from `/proc`, so it must NOT be converted
+/// to microseconds — the raw tick value is what polkit expects.
 fn get_process_start_time(pid: u32) -> Option<u64> {
     let stat_path = format!("/proc/{pid}/stat");
     let stat_content = std::fs::read_to_string(&stat_path).ok()?;
@@ -49,12 +52,7 @@ fn get_process_start_time(pid: u32) -> Option<u64> {
     //   cutime(13) cstime(14) priority(15) nice(16) num_threads(17)
     //   itrealvalue(18) starttime(19)
     let start_time_ticks = fields.get(19)?.parse::<u64>().ok()?;
-    let clk_tck = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64;
-    if clk_tck == 0 {
-        return None;
-    }
-    // Convert ticks to microseconds for polkit
-    Some(start_time_ticks * 1_000_000 / clk_tck)
+    Some(start_time_ticks)
 }
 
 /// Check whether the caller of a DBus method is authorized for privileged
