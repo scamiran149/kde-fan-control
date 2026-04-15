@@ -128,7 +128,9 @@ async fn check_polkit_authorization(uid: u32, pid: u32) -> Result<bool, String> 
     let subject_dict: HashMap<&str, Value<'_>> = {
         let mut m = HashMap::new();
         m.insert("pid", Value::from(pid));
-        m.insert("uid", Value::from(uid));
+        // Polkit expects uid as INT32 (D-Bus type 'i'), not UINT32.
+        // See polkitsubject.c: lookup_asv(details, "uid", G_VARIANT_TYPE_INT32, ...).
+        m.insert("uid", Value::from(uid as i32));
         m.insert(
             "start-time",
             Value::from(get_process_start_time(pid).unwrap_or(0u64)),
