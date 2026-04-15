@@ -13,6 +13,7 @@ It is built for reviewable, safer control. You discover fans and sensors, stage 
 ## Why It Feels Modern
 
 - Per-fan control with temperature-target PID policies instead of opaque board-level behavior
+- Multi-sensor aggregation — combine any number of temperature inputs using avg, max, min, or median so one fan can track the hottest component or the average across a zone
 - Draft, validate, and apply workflow instead of direct live mutation
 - KDE-native interface with overview, detail pages, wizard setup, tray status, and notifications
 - One DBus API shared by GUI and CLI, with read-open access and polkit-gated writes
