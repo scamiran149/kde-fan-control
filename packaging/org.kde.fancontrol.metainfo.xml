@@ -1,39 +1,66 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
   <id>org.kde.fancontrol</id>
-  <metadata_license>MIT</metadata_license>
-  <project_license>MIT</project_license>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
   <name>Fan Control</name>
-  <summary>Per-fan PID control for Linux desktop systems</summary>
+  <summary>Next-generation KDE fan control for Linux desktops</summary>
 
   <description>
     <p>
-      KDE Fan Control provides flexible, per-fan PID control for Linux desktop
-      machines where the standard fancontrol utility is too rigid or cumbersome.
-      It runs a privileged daemon that manages fan speeds using selectable
-      temperature inputs or aggregated sensor groups, and exposes control
-      through DBus to a KDE/Qt6 GUI, system tray app, and CLI.
+      KDE Fan Control is a next-generation fan control experience for the KDE
+      desktop. A privileged Rust daemon owns hardware writes, applies per-fan
+      PID policies, and exposes one DBus control surface to the GUI, tray, and
+      CLI.
+    </p>
+    <p>
+      The result is modern, reviewable fan management: discover hardware,
+      stage changes in a draft, validate them before applying, and keep
+      controlled fans on a fail-safe path that returns them to maximum speed if
+      the daemon stops unexpectedly.
     </p>
     <p>Features:</p>
     <ul>
-      <li>Per-fan PID control with configurable gains, limits, and sample intervals</li>
-      <li>Automatic hardware discovery via Linux hwmon sysfs interface</li>
-      <li>KDE-native GUI with overview, inventory, and fan detail pages</li>
-      <li>System tray integration with status notifications</li>
-      <li>Staged draft/applied configuration lifecycle with validation</li>
-      <li>Auto-tune wizard for suggesting PID gains</li>
-      <li>Polkit-authenticated privileged operations</li>
-      <li>Fail-safe fallback: fans driven to maximum speed on daemon failure</li>
-      <li>Friendly name persistence for sensors and fans</li>
+      <li>Per-fan PID control with configurable gains, limits, and cadence</li>
+      <li>Automatic hardware discovery from Linux hwmon sysfs</li>
+      <li>KDE-native GUI with overview, inventory, fan detail pages, and wizard setup</li>
+      <li>System tray integration with status notifications and quick visibility into alerts</li>
+      <li>Draft, validate, and apply lifecycle for reviewable configuration changes</li>
+      <li>Auto-tune proposals, multi-sensor aggregation, and friendly names</li>
+      <li>Polkit-authenticated write operations with read-open DBus access</li>
+      <li>Fail-safe fallback and degraded-fan recovery for safer runtime behavior</li>
     </ul>
   </description>
 
   <launchable type="desktop-id">org.kde.fancontrol.desktop</launchable>
 
+  <screenshots>
+    <screenshot type="default">
+      <caption>Overview dashboard with live fan state, temperatures, RPM, and output</caption>
+      <image>https://raw.githubusercontent.com/scamiran149/kde-fan-control/master/docs/assets/screenshots/overview.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Inventory page for discovered fans and sensors</caption>
+      <image>https://raw.githubusercontent.com/scamiran149/kde-fan-control/master/docs/assets/screenshots/inventory.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Fan detail page for tuning control mode, sources, target temperature, and PID gains</caption>
+      <image>https://raw.githubusercontent.com/scamiran149/kde-fan-control/master/docs/assets/screenshots/fan-detail-page.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Wizard-based setup for guided fan enrollment</caption>
+      <image>https://raw.githubusercontent.com/scamiran149/kde-fan-control/master/docs/assets/screenshots/wizard-step-1.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>System tray popover showing degraded state and active alerts</caption>
+      <image>https://raw.githubusercontent.com/scamiran149/kde-fan-control/master/docs/assets/screenshots/tray-popover.png</image>
+    </screenshot>
+  </screenshots>
+
   <releases>
     <release version="1.0.1" date="2026-04-14" type="stable">
       <description>
-        <p>Initial release. All v1 requirements validated across 4 phases.</p>
+        <p>Packaging and security hardening update with improved polkit handling, fallback behavior, and local install integration.</p>
       </description>
     </release>
   </releases>

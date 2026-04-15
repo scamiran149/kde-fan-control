@@ -30,8 +30,9 @@ int main(int argc, char *argv[])
     app.setOrganizationName(QStringLiteral("KDE"));
     app.setOrganizationDomain(QStringLiteral("org.kde"));
     app.setApplicationName(QStringLiteral("kde-fan-control-gui"));
-    app.setApplicationVersion(QStringLiteral("0.1.0"));
-    app.setWindowIcon(QIcon::fromTheme(QStringLiteral("kde-fan-control")));
+    app.setApplicationVersion(QStringLiteral("1.0.1"));
+    app.setDesktopFileName(QStringLiteral("org.kde.fancontrol"));
+    app.setWindowIcon(QIcon::fromTheme(QStringLiteral("org.kde.fancontrol")));
 
     // Central DBus proxy for the daemon on the system bus.
     DaemonInterface daemonInterface;

@@ -116,13 +116,13 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/org.kde.fancontrol.deskto
 )
 
 # Install the application icons to the hicolor icon theme
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/icons/hicolor/scalable/apps/kde-fan-control.svg
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/icons/hicolor/scalable/apps/org.kde.fancontrol.svg
     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps
 )
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/icons/hicolor/48x48/apps/kde-fan-control.png
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/icons/hicolor/48x48/apps/org.kde.fancontrol.png
     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/48x48/apps
 )
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/icons/hicolor/128x128/apps/kde-fan-control.png
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../packaging/icons/hicolor/128x128/apps/org.kde.fancontrol.png
     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/128x128/apps
 )
 

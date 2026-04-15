@@ -2,7 +2,7 @@
 Type=Application
 Name=Fan Control
 Comment=KDE fan control daemon interface
-Icon=kde-fan-control
+Icon=org.kde.fancontrol
 Exec=kde-fan-control-gui
 Categories=System;Monitor;
 StartupNotify=true

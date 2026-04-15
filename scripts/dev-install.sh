@@ -55,11 +55,13 @@ gui_build_root="$repo_root/gui/build"
 
 daemon_src="$artifact_root/kde-fan-control-daemon"
 fallback_src="$artifact_root/kde-fan-control-fallback"
-gui_src="$gui_build_root/gui_app"
+gui_src="$gui_build_root/kde-fan-control-gui"
 
 polkit_src="$repo_root/packaging/polkit/org.kde.fancontrol.policy"
 desktop_src="$repo_root/packaging/org.kde.fancontrol.desktop"
-icon_src="$repo_root/packaging/icons/hicolor/scalable/apps/kde-fan-control.svg"
+icon_svg_src="$repo_root/packaging/icons/hicolor/scalable/apps/org.kde.fancontrol.svg"
+icon_48_src="$repo_root/packaging/icons/hicolor/48x48/apps/org.kde.fancontrol.png"
+icon_128_src="$repo_root/packaging/icons/hicolor/128x128/apps/org.kde.fancontrol.png"
 dbus_policy_src="$repo_root/packaging/dbus/org.kde.FanControl.conf"
 dbus_service_src="$repo_root/packaging/dbus/org.kde.FanControl.service"
 systemd_src="$repo_root/packaging/systemd/kde-fan-control-daemon.service"
@@ -68,8 +70,10 @@ qml_qmltypes_src="$gui_build_root/org/kde/fancontrol/gui_app.qmltypes"
 
 polkit_dest_dir="/usr/local/share/polkit-1/actions"
 desktop_dest_dir="/usr/local/share/applications"
-icon_dest_dir="/usr/local/share/icons/hicolor/scalable/apps"
 icon_theme_dir="/usr/local/share/icons/hicolor"
+icon_svg_dest_dir="$icon_theme_dir/scalable/apps"
+icon_48_dest_dir="$icon_theme_dir/48x48/apps"
+icon_128_dest_dir="$icon_theme_dir/128x128/apps"
 dbus_policy_dest_dir="/usr/local/share/dbus-1/system.d"
 dbus_service_dest_dir="/usr/local/share/dbus-1/system-services"
 systemd_dest_dir="/etc/systemd/system"
@@ -79,7 +83,9 @@ qml_dest_dir="/usr/lib/x86_64-linux-gnu/qt6/qml/org/kde/fancontrol"
 
 polkit_dest="$polkit_dest_dir/org.kde.fancontrol.policy"
 desktop_dest="$desktop_dest_dir/org.kde.fancontrol.desktop"
-icon_dest="$icon_dest_dir/kde-fan-control.svg"
+icon_svg_dest="$icon_svg_dest_dir/org.kde.fancontrol.svg"
+icon_48_dest="$icon_48_dest_dir/org.kde.fancontrol.png"
+icon_128_dest="$icon_128_dest_dir/org.kde.fancontrol.png"
 dbus_policy_dest="$dbus_policy_dest_dir/org.kde.FanControl.conf"
 dbus_service_dest="$dbus_service_dest_dir/org.kde.FanControl.service"
 systemd_dest="$systemd_dest_dir/kde-fan-control-daemon.service"
@@ -121,7 +127,9 @@ install_assets() {
     "$gui_src" \
     "$polkit_src" \
     "$desktop_src" \
-    "$icon_src" \
+    "$icon_svg_src" \
+    "$icon_48_src" \
+    "$icon_128_src" \
     "$dbus_policy_src" \
     "$dbus_service_src" \
     "$systemd_src" \
@@ -135,7 +143,9 @@ install_assets() {
 
   install_file "$polkit_src" "$polkit_dest"
   install_file "$desktop_src" "$desktop_dest"
-  install_file "$icon_src" "$icon_dest"
+  install_file "$icon_svg_src" "$icon_svg_dest"
+  install_file "$icon_48_src" "$icon_48_dest"
+  install_file "$icon_128_src" "$icon_128_dest"
   install_file "$dbus_policy_src" "$dbus_policy_dest"
   install_file "$dbus_service_src" "$dbus_service_dest"
   install_file "$qml_qmldir_src" "$qml_dest_dir/qmldir"
@@ -148,6 +158,7 @@ install_assets() {
   systemctl daemon-reload
   update-desktop-database "$desktop_dest_dir" >/dev/null 2>&1 || true
   gtk-update-icon-cache -q -t "$icon_theme_dir" >/dev/null 2>&1 || true
+  kbuildsycoca6 >/dev/null 2>&1 || true
 
   printf 'Installed developer integration files using %s artifacts.\n' "$profile"
   printf 'Start the daemon with: systemctl start kde-fan-control-daemon\n'
@@ -169,7 +180,9 @@ uninstall_assets() {
   remove_if_exists "$dbus_policy_dest"
   remove_if_exists "$polkit_dest"
   remove_if_exists "$desktop_dest"
-  remove_if_exists "$icon_dest"
+  remove_if_exists "$icon_svg_dest"
+  remove_if_exists "$icon_48_dest"
+  remove_if_exists "$icon_128_dest"
   remove_if_exists "$daemon_dest"
   remove_if_exists "$fallback_dest"
   remove_if_exists "$gui_dest"
@@ -178,6 +191,7 @@ uninstall_assets() {
   systemctl daemon-reload
   update-desktop-database "$desktop_dest_dir" >/dev/null 2>&1 || true
   gtk-update-icon-cache -q -t "$icon_theme_dir" >/dev/null 2>&1 || true
+  kbuildsycoca6 >/dev/null 2>&1 || true
 
   if [[ "$was_active" == "true" ]]; then
     printf 'Stopped running kde-fan-control-daemon instance before uninstall.\n'

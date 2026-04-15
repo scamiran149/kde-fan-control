@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 620" width="1280" height="620" role="img" aria-labelledby="title desc">
+<title id="title">Safety layers</title>
+<desc id="desc">KDE Fan Control protects managed fans with multiple fallback and recovery layers.</desc>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="#eff0f1"/>
+<stop offset="100%" stop-color="#dfe3e7"/>
+</linearGradient>
+<filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+<feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#000000" flood-opacity="0.16"/>
+</filter>
+</defs>
+<rect width="1280" height="620" fill="url(#bg)"/>
+
+<text x="72" y="76" fill="#232629" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="34" font-weight="700">Safety Layers</text>
+<text x="72" y="110" fill="#5b6470" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="18">Managed fans never depend on a single recovery path.</text>
+
+<rect x="92" y="150" width="1096" height="68" rx="22" fill="#3daee9" filter="url(#shadow)"/>
+<text x="124" y="193" fill="#eff0f1" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="24" font-weight="700">1. Graceful shutdown</text>
+<text x="430" y="193" fill="#eff0f1" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="17">Stop control tasks and write maximum PWM before exit.</text>
+
+<rect x="132" y="234" width="1016" height="68" rx="22" fill="#1d99f3" filter="url(#shadow)"/>
+<text x="164" y="277" fill="#eff0f1" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="24" font-weight="700">2. Panic fallback hook</text>
+<text x="448" y="277" fill="#eff0f1" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="17">Mirror owned fans and write synchronously from panic context.</text>
+
+<rect x="172" y="318" width="936" height="68" rx="22" fill="#f6c177" filter="url(#shadow)"/>
+<text x="204" y="361" fill="#232629" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="24" font-weight="700">3. Runtime degradation</text>
+<text x="500" y="361" fill="#232629" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="17">Fallback one fan when sensors or writes fail without stopping the rest.</text>
+
+<rect x="212" y="402" width="856" height="68" rx="22" fill="#2e9d5b" filter="url(#shadow)"/>
+<text x="244" y="445" fill="#eff0f1" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="24" font-weight="700">4. Re-assessment and boot reconciliation</text>
+<text x="678" y="445" fill="#eff0f1" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="17">Recover transient failures and restore valid fans after restart.</text>
+
+<rect x="252" y="486" width="776" height="68" rx="22" fill="#31363b" filter="url(#shadow)"/>
+<text x="284" y="529" fill="#eff0f1" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="24" font-weight="700">5. ExecStopPost fallback helper</text>
+<text x="630" y="529" fill="#eff0f1" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="17">Covers hard kills by replaying maximum PWM from persisted ownership.</text>
+</svg>

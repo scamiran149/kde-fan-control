@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 420" width="1280" height="420" role="img" aria-labelledby="title desc">
+<title id="title">Draft apply lifecycle</title>
+<desc id="desc">Inventory discovery feeds a draft, validation checks it, and successful changes become the applied configuration.</desc>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="#eff0f1"/>
+<stop offset="100%" stop-color="#dfe3e7"/>
+</linearGradient>
+<linearGradient id="draft" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="#bfe8ff"/>
+<stop offset="100%" stop-color="#8fd3ff"/>
+</linearGradient>
+<linearGradient id="live" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="#c6efb3"/>
+<stop offset="100%" stop-color="#8fd07a"/>
+</linearGradient>
+<filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+<feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#000000" flood-opacity="0.16"/>
+</filter>
+<marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+<path d="M 0 0 L 12 6 L 0 12 z" fill="#3daee9"/>
+</marker>
+</defs>
+<rect width="1280" height="420" fill="url(#bg)"/>
+
+<text x="72" y="76" fill="#232629" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="34" font-weight="700">Draft / Apply Lifecycle</text>
+<text x="72" y="110" fill="#5b6470" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="18">Configuration stays reviewable until the daemon validates current hardware and promotes passing fans.</text>
+
+<rect x="72" y="168" width="220" height="132" rx="24" fill="#f8f9fa" stroke="#c9ced3" stroke-width="2" filter="url(#shadow)"/>
+<text x="104" y="214" fill="#232629" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="28" font-weight="700">Inventory</text>
+<text x="104" y="246" fill="#5b6470" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="17">Discover fans, sensors, and available control modes.</text>
+
+<rect x="374" y="168" width="220" height="132" rx="24" fill="url(#draft)" stroke="#3daee9" stroke-width="2" filter="url(#shadow)"/>
+<text x="406" y="214" fill="#232629" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="28" font-weight="700">Draft</text>
+<text x="406" y="246" fill="#2f4858" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="17">Stage enrollment, naming, aggregation, and PID edits.</text>
+
+<rect x="676" y="168" width="220" height="132" rx="24" fill="#f8f9fa" stroke="#f6c177" stroke-width="2" filter="url(#shadow)"/>
+<text x="708" y="214" fill="#232629" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="28" font-weight="700">Validate</text>
+<text x="708" y="246" fill="#5b6470" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="17">Check ownership, sensor presence, mode support, and bounds.</text>
+
+<rect x="978" y="168" width="230" height="132" rx="24" fill="url(#live)" stroke="#2e9d5b" stroke-width="2" filter="url(#shadow)"/>
+<text x="1010" y="214" fill="#232629" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="28" font-weight="700">Applied</text>
+<text x="1010" y="246" fill="#355d39" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="17">Persist config, claim fans, and start live control loops.</text>
+
+<line x1="292" y1="234" x2="374" y2="234" stroke="#3daee9" stroke-width="6" stroke-linecap="round" marker-end="url(#arrow)"/>
+<line x1="594" y1="234" x2="676" y2="234" stroke="#3daee9" stroke-width="6" stroke-linecap="round" marker-end="url(#arrow)"/>
+<line x1="896" y1="234" x2="978" y2="234" stroke="#3daee9" stroke-width="6" stroke-linecap="round" marker-end="url(#arrow)"/>
+
+<path d="M 786 300 C 786 348, 484 348, 484 306" fill="none" stroke="#f67400" stroke-width="5" stroke-linecap="round" stroke-dasharray="10 10" marker-end="url(#arrow)"/>
+
+<text x="398" y="342" fill="#005b94" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="15" font-weight="700">discard and restage at any point</text>
+<text x="716" y="342" fill="#c75b00" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="15" font-weight="700">fix invalid fans before apply</text>
+<text x="995" y="342" fill="#2e9d5b" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="15" font-weight="700">runtime state, events, and fallback incidents</text>
+</svg>

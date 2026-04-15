@@ -96,7 +96,7 @@ cmake --build gui/build
 
 ### Local developer install
 
-If you want the system bus service, polkit prompt, desktop launcher, and icon to behave like an installed app during local testing, use the helper script:
+If you want the system bus service, polkit prompt, desktop launcher, and themed app icon to behave like an installed app during local testing, use the helper script:
 
 ```bash
 cargo build --release
@@ -106,7 +106,7 @@ sudo ./scripts/dev-install.sh install --release
 sudo systemctl enable --now kde-fan-control-daemon
 ```
 
-This installs the packaging assets into `/usr/local`, writes a dev-only systemd unit into `/etc/systemd/system`, and copies the current build outputs into `/usr/local/bin` and `/usr/local/libexec`. Remove everything with:
+This installs the packaging assets into `/usr/local`, writes a dev-only systemd unit into `/etc/systemd/system`, copies the current build outputs into `/usr/local/bin` and `/usr/local/libexec`, installs the SVG and PNG icon sizes, and refreshes the desktop/icon caches so `org.kde.fancontrol.desktop` resolves its themed icon correctly in Plasma. Remove everything with:
 
 ```bash
 sudo ./scripts/dev-install.sh uninstall
@@ -126,7 +126,7 @@ The daemon defaults to the system bus, which requires root. For development, use
 ./target/debug/kde-fan-control inventory
 
 # Terminal 3: Run GUI (as regular user, NOT root)
-./gui/build/gui-app
+./gui/build/kde-fan-control-gui
 ```
 
 The GUI must run as a regular user — not root/sudo. KStatusNotifierItem

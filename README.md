@@ -1,66 +1,93 @@
 # KDE Fan Control
 
-Linux desktop fan control for machines where `fancontrol` is too rigid or cumbersome.
+<p align="center">
+  <img src="kde-fan-control.svg" alt="KDE Fan Control icon" width="160" />
+</p>
 
-Users can safely and flexibly control desktop fan behavior with understandable per-fan PID policies, without losing fail-safe behavior.
+<p align="center"><strong>Next-generation KDE fan control for Linux desktops.</strong></p>
 
-## Features
+KDE Fan Control is a modern fan-control stack for the KDE desktop: a privileged Rust daemon owns hardware writes, runs per-fan PID policies, and exposes one DBus control surface to a KDE/Qt6 GUI, system tray app, and CLI.
 
-- **Hardware inventory** from Linux kernel hwmon sysfs (`/sys/class/hwmon/hwmon*`)
-- **Per-fan enrollment** with draft/apply lifecycle — changes are staged, validated, then promoted
-- **Temperature-target PID control** — fans track a temperature setpoint, not an RPM target
-- **Sensor aggregation** — average, max, min, or median across multiple temperature inputs
-- **Auto-tune** with bounded observation window and softened proposals; review before accepting
-- **Safe-maximum fallback** — controlled fans fail to PWM 255 on any daemon failure (panic, crash, graceful shutdown)
-- **Boot reconciliation** — managed fans auto-resume after reboot
-- **Read-open / write-privileged** DBus access via polkit with UID-0 fallback
-- **Friendly names** for sensors and fans
-- **KDE-native GUI** with wizard dialog, fan detail pages, system tray, and desktop notifications
+It is built for reviewable, safer control. You discover fans and sensors, stage changes in a draft, validate them before they go live, and keep controlled fans on a fail-safe path that drives them to maximum speed if the daemon stops unexpectedly.
+
+## Why It Feels Modern
+
+- Per-fan control with temperature-target PID policies instead of opaque board-level behavior
+- Draft, validate, and apply workflow instead of direct live mutation
+- KDE-native interface with overview, detail pages, wizard setup, tray status, and notifications
+- One DBus API shared by GUI and CLI, with read-open access and polkit-gated writes
+- Automatic degraded-fan recovery and boot reconciliation after transient failures or restarts
+
+## Interface Preview
+
+<p align="center">
+  <img src="docs/assets/screenshots/overview.png" alt="Overview page" width="900" />
+</p>
+
+| Overview | Inventory |
+|---|---|
+| ![Overview dashboard](docs/assets/screenshots/overview.png) | ![Inventory page](docs/assets/screenshots/inventory.png) |
+
+| Fan detail | Wizard |
+|---|---|
+| ![Fan detail page](docs/assets/screenshots/fan-detail-page.png) | ![Wizard step 1](docs/assets/screenshots/wizard-step-1.png) |
+
+| Tray popover | Apply review |
+|---|---|
+| ![Tray popover](docs/assets/screenshots/tray-popover.png) | ![Wizard final review](docs/assets/screenshots/wizard-step-7.png) |
 
 ## Architecture
 
-```
-                      +-----------------+
-                      |  KDE/Qt6 GUI   |
-                      | (Kirigami/QML) |
-                      +--------+--------+
-                               |
-                          DBus (system bus)
-                               |
-+----------------+    +--------+--------+    +-----------------+
-|  Linux kernel  |    |   Rust daemon   |    |   Rust CLI      |
-|  hwmon sysfs   +--->|   (root)        +--->|   (kde-fan-     |
-| /sys/class/    |    |  - PID loops    |    |    control)     |
-|  hwmon/hwmon*  |    |  - DBus server  |    |                 |
-+----------------+    |  - config owner  |    +-----------------+
-                      +--------+--------+
-                               |
-                          DBus
-                               |
-                      +--------+--------+
-                      |  System tray   |
-                      | (KStatus-      |
-                      |  NotifierItem) |
-                      +-----------------+
-```
+![Architecture diagram](docs/assets/diagrams/architecture.svg)
 
 **DBus bus name:** `org.kde.FanControl`
 
 | Path | Interface | Purpose |
 |---|---|---|
-| `/org/kde/FanControl` | `org.kde.FanControl.Inventory` | Hardware discovery, naming |
-| `/org/kde/FanControl/Lifecycle` | `org.kde.FanControl.Lifecycle` | Draft/apply config, runtime state |
-| `/org/kde/FanControl/Control` | `org.kde.FanControl.Control` | PID control, auto-tune |
+| `/org/kde/FanControl` | `org.kde.FanControl.Inventory` | Hardware discovery and friendly naming |
+| `/org/kde/FanControl/Lifecycle` | `org.kde.FanControl.Lifecycle` | Draft config, applied config, validation, degraded state, lifecycle events |
+| `/org/kde/FanControl/Control` | `org.kde.FanControl.Control` | Runtime control status, PID profile edits, and auto-tune |
+
+## Draft / Apply Flow
+
+![Draft apply flow diagram](docs/assets/diagrams/config-lifecycle.svg)
+
+The daemon owns the configuration file and is the only process that writes fan-control sysfs nodes. Clients stay stateless and issue DBus calls against one authority.
+
+## Safety Layers
+
+![Safety layers diagram](docs/assets/diagrams/safety-layers.svg)
+
+Controlled fans always fail to high speed when the daemon exits, panics, or loses safe control conditions.
+
+- Graceful shutdown writes safe maximum PWM
+- Panic fallback mirrors owned fans and writes synchronously from panic context
+- Runtime degradation drives affected fans to fallback and keeps the rest running
+- Re-assessment recovers transiently degraded fans automatically
+- Boot reconciliation restores valid applied fans after restart
+- `ExecStopPost` fallback covers hard kills such as `SIGKILL`
+
+## Highlights
+
+- Hardware inventory from Linux kernel hwmon sysfs at `/sys/class/hwmon/hwmon*`
+- Per-fan enrollment with explicit draft, validate, and apply lifecycle
+- Temperature-target PID control with configurable gains, cadence, limits, and deadband
+- Multi-sensor aggregation with `avg`, `max`, `min`, and `median`
+- Auto-tune proposals with bounded observation windows and explicit acceptance
+- Friendly names for fans and sensors
+- KDE-native GUI with overview, inventory, fan detail pages, wizard setup, tray, and notifications
+- Read-open and write-privileged DBus access via polkit with UID-0 fallback
+- Safe-maximum fallback, fallback incident persistence, and degraded-fan recovery
 
 ## Quick Start
 
 ### Prerequisites
 
 - Rust toolchain (stable, edition 2024)
-- Qt 6.8+ development packages (Core, Quick, Qml, QuickControls2, DBus, Widgets)
-- KDE Frameworks 6 packages (Kirigami, StatusNotifierItem, Notifications, I18n)
+- Qt 6.8+ development packages: Core, Quick, Qml, QuickControls2, DBus, Widgets
+- KDE Frameworks 6 packages: Kirigami, StatusNotifierItem, Notifications, I18n
 - CMake 3.20+
-- `libclang` for Rust bindgen (if building with udev crate)
+- `libclang` for Rust bindgen when building with `udev`
 
 ### Build
 
@@ -90,7 +117,7 @@ sudo ./target/release/kde-fan-control-daemon
 ./target/release/kde-fan-control state
 ```
 
-### Local installed-style testing
+### Local Installed-Style Testing
 
 ```sh
 cargo build --release
@@ -100,76 +127,50 @@ sudo ./scripts/dev-install.sh install --release
 sudo systemctl enable --now kde-fan-control-daemon
 ```
 
-This installs the desktop file, icon, polkit policy, DBus files, and a dev systemd unit for local testing. Remove them with `sudo ./scripts/dev-install.sh uninstall`.
+This installs the desktop file, icon assets, polkit policy, DBus files, and a dev systemd unit for local testing. Remove them with `sudo ./scripts/dev-install.sh uninstall`.
 
-## CLI Quick Reference
+## CLI Snapshot
 
 | Command | Description |
 |---|---|
-| `inventory` | List detected sensors and fans from hwmon sysfs |
-| `rename <id> <name>` | Assign a friendly name to a sensor (use `--fan` for fans) |
-| `unname <id>` | Remove a friendly name |
-| `draft` | Show the current draft (staged) configuration |
-| `applied` | Show the current applied (live) configuration |
+| `inventory` | List detected sensors and fans |
+| `rename <id> <name>` | Assign a friendly name to a sensor or fan |
+| `draft` | Show the current staged configuration |
+| `applied` | Show the current live configuration |
 | `degraded` | Show degraded fan summary with reasons |
 | `events` | Show recent lifecycle events |
-| `enroll <fan_id>` | Stage a fan enrollment in the draft config |
-| `unenroll <fan_id>` | Remove a fan from the draft config |
-| `discard` | Discard the entire draft configuration |
+| `enroll <fan_id>` | Stage fan enrollment |
+| `control set <fan_id>` | Stage PID profile changes |
 | `validate` | Validate the draft without applying it |
 | `apply` | Promote the draft configuration to live |
-| `state` | Show runtime state of all fans |
-| `control set <fan_id>` | Stage PID control profile changes for a managed fan |
+| `state` | Show runtime state for all fans |
 | `auto-tune start <fan_id>` | Start a bounded auto-tune run |
-| `auto-tune result <fan_id>` | Inspect the latest auto-tune result |
-| `auto-tune accept <fan_id>` | Accept the latest auto-tune proposal into draft |
 
-Most commands accept `--format json` for machine-readable output and `--detail` for expanded information.
-
-## Configuration Basics
-
-**Config location:** `$XDG_STATE_DIR/kde-fan-control/config.toml` (typically `~/.local/state/kde-fan-control/config.toml`)
-
-The daemon owns the configuration. Clients never write the file directly — all changes go through the draft/apply lifecycle:
-
-1. `enroll` or `control set` stages changes in the **draft**
-2. `validate` checks the draft without side effects
-3. `apply` atomically promotes the draft to the **applied** (live) configuration
-4. `discard` throws away the draft if you change your mind
-
-Example workflow:
-
-```sh
-sudo kde-fan-control enroll hwmon1/pwm2 --managed --control-mode pwm --temp-sources hwmon1/temp1,hwmon1/temp2
-sudo kde-fan-control control set hwmon1/pwm2 --target-temp 60 --aggregation max --kp 2.0 --ki 0.5 --kd 1.0 --sample-ms 1000 --control-ms 2000 --write-ms 2000
-sudo kde-fan-control validate
-sudo kde-fan-control apply
-```
-
-## Safety Model
-
-Controlled fans **always** fail to high speed (PWM 255):
-
-- A Rust panic hook writes safe-maximum before the process exits
-- Graceful shutdown and crash paths both trigger fallback
-- Boot reconciliation restores managed fans automatically after reboot
-- BIOS-managed fans are never touched unless explicitly enrolled
-- Fallback incidents are persisted and inspectable via `degraded` and `events`
-
-See [docs/safety-model.md](docs/safety-model.md) for full details.
+Most commands accept `--format json`, and many accept `--detail` for expanded output.
 
 ## Documentation
 
 | Document | Content |
 |---|---|
-| [docs/safety-model.md](docs/safety-model.md) | Fallback behavior, panic hook, boot reconciliation |
+| [docs/building.md](docs/building.md) | Build prerequisites, local install flow, development runs |
+| [docs/developer-install.md](docs/developer-install.md) | Paths and behavior for `scripts/dev-install.sh` |
+| [docs/architecture.md](docs/architecture.md) | Internal structure, control loops, privilege boundary |
 | [docs/dbus-api.md](docs/dbus-api.md) | DBus interface contract |
-| [docs/configuration.md](docs/configuration.md) | Config file format, draft/apply model, examples |
-| [docs/architecture.md](docs/architecture.md) | Internal structure, control loops, data flow |
+| [docs/configuration.md](docs/configuration.md) | Config schema, draft/apply model, examples |
+| [docs/safety-model.md](docs/safety-model.md) | Fallback behavior, degraded-state recovery, boot reconciliation |
+| [docs/SECURITY.md](docs/SECURITY.md) | Security analysis and remediation notes |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
 
 ## Project Status
 
-**v1.0 MVP shipped** (2026-04-12). Functional daemon, CLI, and KDE GUI with system tray. See the commit log for recent changes.
+**v1.0.1 shipped** on 2026-04-14.
+
+Current release highlights:
+
+- systemd and local install integration
+- polkit authorization and GUI unlock flow
+- fallback helper hardening and owned-fan persistence fixes
+- safer degradation and recovery behavior
 
 ## License
 
