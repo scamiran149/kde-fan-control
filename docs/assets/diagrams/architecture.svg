@@ -32,31 +32,42 @@
 <rect x="56" y="146" width="1168" height="224" rx="28" fill="#f8f9fa" stroke="#c9ced3" stroke-width="2"/>
 <text x="86" y="188" fill="#232629" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="20" font-weight="700">Desktop session</text>
 
-<rect x="86" y="222" width="250" height="108" rx="24" fill="url(#card)" filter="url(#shadow)"/>
+<rect x="86" y="222" width="250" height="112" rx="24" fill="url(#card)" filter="url(#shadow)"/>
 <text x="116" y="263" fill="#eff0f1" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="28" font-weight="700">CLI</text>
-<text x="116" y="292" fill="#8fd3ff" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="17">Rust client using zbus proxies</text>
+<text x="116" y="294" fill="#d8efff" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="16">Rust client using zbus proxies</text>
 
-<rect x="414" y="210" width="330" height="132" rx="24" fill="url(#card)" filter="url(#shadow)"/>
+<rect x="414" y="206" width="330" height="140" rx="24" fill="url(#card)" filter="url(#shadow)"/>
 <text x="444" y="255" fill="#eff0f1" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="28" font-weight="700">KDE / Qt6 GUI</text>
-<text x="444" y="286" fill="#8fd3ff" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="17">Kirigami pages, detail editor, wizard, unlock flow</text>
+<text x="444" y="286" fill="#d8efff" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="16">
+<tspan x="444" dy="0">Kirigami pages, detail editor,</tspan>
+<tspan x="444" dy="20">wizard, and unlock flow</tspan>
+</text>
 
-<rect x="822" y="222" width="330" height="108" rx="24" fill="url(#card)" filter="url(#shadow)"/>
+<rect x="822" y="222" width="330" height="112" rx="24" fill="url(#card)" filter="url(#shadow)"/>
 <text x="852" y="263" fill="#eff0f1" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="28" font-weight="700">Tray + notifications</text>
-<text x="852" y="292" fill="#8fd3ff" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="17">KStatusNotifierItem and desktop alerts</text>
+<text x="852" y="292" fill="#d8efff" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="16">
+<tspan x="852" dy="0">Tray icon, popover, and</tspan>
+<tspan x="852" dy="20">desktop alerts</tspan>
+</text>
 
 <rect x="56" y="394" width="1168" height="54" rx="27" fill="url(#bus)" filter="url(#shadow)"/>
 <text x="560" y="428" fill="#eff0f1" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="22" font-weight="700">DBus system bus</text>
 
 <rect x="56" y="486" width="1168" height="218" rx="28" fill="#f8f9fa" stroke="#c9ced3" stroke-width="2"/>
-<text x="86" y="528" fill="#232629" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="20" font-weight="700">Privileged control side</text>
 
-<rect x="140" y="560" width="448" height="106" rx="24" fill="url(#card)" filter="url(#shadow)"/>
+<rect x="140" y="552" width="448" height="122" rx="24" fill="url(#card)" filter="url(#shadow)"/>
 <text x="172" y="602" fill="#eff0f1" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="30" font-weight="700">Rust daemon</text>
-<text x="172" y="632" fill="#8fd3ff" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="17">Config ownership, PID loops, validation, fallback, recovery</text>
+<text x="172" y="628" fill="#d8efff" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="16">
+<tspan x="172" dy="0">Config ownership, PID loops,</tspan>
+<tspan x="172" dy="20">validation, fallback, recovery</tspan>
+</text>
 
-<rect x="692" y="560" width="392" height="106" rx="24" fill="url(#card)" filter="url(#shadow)"/>
+<rect x="692" y="552" width="392" height="122" rx="24" fill="url(#card)" filter="url(#shadow)"/>
 <text x="724" y="602" fill="#eff0f1" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="30" font-weight="700">Linux hwmon sysfs</text>
-<text x="724" y="632" fill="#8fd3ff" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="17">hwmon scan, pwm nodes, temperature inputs, RPM feedback</text>
+<text x="724" y="628" fill="#d8efff" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="16">
+<tspan x="724" dy="0">hwmon scan, pwm nodes,</tspan>
+<tspan x="724" dy="20">temperature inputs and RPM feedback</tspan>
+</text>
 
 <line x1="211" y1="330" x2="211" y2="394" stroke="#3daee9" stroke-width="6" stroke-linecap="round"/>
 <line x1="579" y1="342" x2="579" y2="394" stroke="#3daee9" stroke-width="6" stroke-linecap="round"/>
@@ -66,8 +77,9 @@
 <line x1="986" y1="448" x2="986" y2="560" stroke="#3daee9" stroke-width="6" stroke-linecap="round" marker-end="url(#arrowBlue)"/>
 <line x1="588" y1="613" x2="692" y2="613" stroke="#f67400" stroke-width="6" stroke-linecap="round" marker-end="url(#arrowOrange)"/>
 
-<text x="146" y="386" fill="#1d99f3" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="15" font-weight="700">shared interface</text>
-<text x="500" y="386" fill="#1d99f3" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="15" font-weight="700">status + control methods</text>
-<text x="925" y="386" fill="#1d99f3" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="15" font-weight="700">alerts + status summaries</text>
-<text x="600" y="596" fill="#c75b00" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="15" font-weight="700">root-owned writes</text>
+<text x="132" y="382" fill="#005b94" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="15" font-weight="700">shared interface</text>
+<text x="468" y="382" fill="#005b94" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="15" font-weight="700">status + control methods</text>
+<text x="902" y="382" fill="#005b94" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="15" font-weight="700">alerts + status summaries</text>
+<text x="616" y="544" fill="#8a3d00" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="14" font-weight="700">root-owned PWM writes</text>
+<text x="86" y="544" fill="#232629" font-family="Noto Sans, Inter, Arial, sans-serif" font-size="20" font-weight="700">Privileged control side</text>
 </svg>
