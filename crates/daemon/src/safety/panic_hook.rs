@@ -143,3 +143,39 @@ pub fn install_panic_fallback_hook(
         previous_hook(panic_info);
     }));
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    use kde_fan_control_core::config::{AppConfig, LifecycleEventLog};
+    use kde_fan_control_core::inventory::ControlMode;
+    use kde_fan_control_core::lifecycle::OwnedFanSet;
+    use tokio::sync::RwLock;
+
+    use super::run_panic_fallback_recorder;
+
+    #[test]
+    fn panic_path_uses_same_fallback_recorder() {
+        let mut owned = OwnedFanSet::new();
+        owned.claim_fan("fan-1", ControlMode::Pwm, "/definitely/missing/pwm1");
+        let owned = Arc::new(RwLock::new(owned));
+        let config = Arc::new(RwLock::new(AppConfig::default()));
+        let events = Arc::new(RwLock::new(LifecycleEventLog::new()));
+        let fallback_fan_ids = Arc::new(RwLock::new(HashSet::new()));
+
+        assert!(run_panic_fallback_recorder(
+            &owned,
+            &config,
+            &events,
+            &fallback_fan_ids,
+            "panic: simulated".to_string(),
+        ));
+
+        let config = config
+            .try_read()
+            .expect("config lock should be available after panic recorder completes");
+        assert!(config.fallback_incident.is_some());
+    }
+}

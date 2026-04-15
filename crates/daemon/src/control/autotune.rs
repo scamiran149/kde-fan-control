@@ -252,3 +252,170 @@ impl ControlSupervisor {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use kde_fan_control_core::config::{AppConfig, DegradedState};
+    use kde_fan_control_core::inventory::ControlMode;
+    use kde_fan_control_core::lifecycle::OwnedFanSet;
+    use tokio::sync::RwLock;
+
+    use crate::control::supervisor::ControlSupervisor;
+    use crate::state::AutoTuneResultView;
+    use crate::test_support::{ControlFixture, applied_config_for, test_snapshot};
+
+    async fn auto_tune_test_harness(
+        fixture: &ControlFixture,
+    ) -> (
+        ControlSupervisor,
+        Arc<RwLock<AppConfig>>,
+        Arc<RwLock<DegradedState>>,
+    ) {
+        let snapshot = Arc::new(RwLock::new(test_snapshot(fixture.root())));
+        let applied = applied_config_for(
+            "hwmon-test-0000000000000001-fan1",
+            "hwmon-test-0000000000000001-temp1",
+        );
+        let config = Arc::new(RwLock::new(AppConfig {
+            applied: Some(applied),
+            ..AppConfig::default()
+        }));
+        let owned = Arc::new(RwLock::new(OwnedFanSet::new()));
+        owned.write().await.claim_fan(
+            "hwmon-test-0000000000000001-fan1",
+            ControlMode::Pwm,
+            fixture.pwm_path().to_string_lossy().as_ref(),
+        );
+        let degraded = Arc::new(RwLock::new(DegradedState::new()));
+        let supervisor = ControlSupervisor::new(
+            Arc::clone(&snapshot),
+            Arc::clone(&config),
+            owned,
+            Arc::clone(&degraded),
+        );
+        supervisor.set_auto_tune_observation_window_ms(40).await;
+        supervisor.reconcile().await;
+        (supervisor, config, degraded)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_tune_start_puts_managed_fan_into_bounded_running_state() {
+        let fixture = ControlFixture::new();
+        fixture.write_temp("60000\n");
+        fixture.write_pwm_seed("0\n");
+
+        let (supervisor, _, _) = auto_tune_test_harness(&fixture).await;
+        supervisor
+            .start_auto_tune("hwmon-test-0000000000000001-fan1")
+            .await
+            .expect("auto-tune should start");
+
+        let result = supervisor
+            .auto_tune_result_json("hwmon-test-0000000000000001-fan1")
+            .await
+            .expect("auto-tune result should serialize");
+        assert!(result.contains("running"));
+        assert!(result.contains("40"));
+
+        let status = supervisor
+            .status_json()
+            .await
+            .expect("status should serialize");
+        assert!(status.contains("\"auto_tuning\":true"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_tune_unreadable_temp_records_failure_without_mutating_applied_gains() {
+        let fixture = ControlFixture::new();
+        fixture.write_pwm_seed("0\n");
+
+        let (supervisor, config, _) = auto_tune_test_harness(&fixture).await;
+        let original_gains = config
+            .read()
+            .await
+            .applied
+            .as_ref()
+            .and_then(|applied| applied.fans.get("hwmon-test-0000000000000001-fan1"))
+            .expect("applied entry should exist")
+            .pid_gains;
+
+        supervisor
+            .start_auto_tune("hwmon-test-0000000000000001-fan1")
+            .await
+            .expect("auto-tune should start");
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        let result = supervisor
+            .auto_tune_result_json("hwmon-test-0000000000000001-fan1")
+            .await
+            .expect("auto-tune result should serialize");
+        assert!(result.contains("failed"));
+
+        let applied_gains = config
+            .read()
+            .await
+            .applied
+            .as_ref()
+            .and_then(|applied| applied.fans.get("hwmon-test-0000000000000001-fan1"))
+            .expect("applied entry should exist")
+            .pid_gains;
+        assert_eq!(applied_gains, original_gains);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_tune_completion_exposes_softened_proposal_without_mutating_applied_gains() {
+        let fixture = ControlFixture::new();
+        fixture.write_temp("60000\n");
+        fixture.write_pwm_seed("0\n");
+
+        let (supervisor, config, _) = auto_tune_test_harness(&fixture).await;
+        let original_gains = config
+            .read()
+            .await
+            .applied
+            .as_ref()
+            .and_then(|applied| applied.fans.get("hwmon-test-0000000000000001-fan1"))
+            .expect("applied entry should exist")
+            .pid_gains;
+
+        supervisor
+            .start_auto_tune("hwmon-test-0000000000000001-fan1")
+            .await
+            .expect("auto-tune should start");
+
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        fixture.write_temp("59000\n");
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        fixture.write_temp("57500\n");
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        let result = supervisor
+            .auto_tune_result_view("hwmon-test-0000000000000001-fan1")
+            .await;
+        match result {
+            AutoTuneResultView::Completed {
+                proposal,
+                observation_window_ms,
+            } => {
+                assert_eq!(observation_window_ms, 40);
+                assert!(proposal.proposed_gains.kp > 0.0);
+                assert!(proposal.proposed_gains.ki > 0.0);
+                assert!(proposal.proposed_gains.kd > 0.0);
+            }
+            other => panic!("expected completed auto-tune result, got {other:?}"),
+        }
+
+        let applied_gains = config
+            .read()
+            .await
+            .applied
+            .as_ref()
+            .and_then(|applied| applied.fans.get("hwmon-test-0000000000000001-fan1"))
+            .expect("applied entry should exist")
+            .pid_gains;
+        assert_eq!(applied_gains, original_gains);
+    }
+}

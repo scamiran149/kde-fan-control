@@ -37,19 +37,20 @@ Depends:
  polkitd,
  ${shlibs:Depends},
  ${misc:Depends},
-Description: Per-fan PID control for Linux desktop systems
- KDE Fan Control provides flexible, per-fan PID control for Linux desktop
- machines where the standard fancontrol utility is too rigid or cumbersome.
- It runs a privileged daemon that manages fan speeds using selectable
- temperature inputs or aggregated sensor groups, and exposes control
- through DBus to a KDE/Qt6 GUI, system tray app, and CLI.
+Description: Next-generation KDE fan control for Linux desktops
+ KDE Fan Control is a next-generation fan control experience for the KDE
+ desktop. A privileged Rust daemon owns hardware writes, applies per-fan
+ PID policies, and exposes one DBus control surface to the GUI, tray, and
+ CLI.
  .
  Features include:
-  - Per-fan PID control with configurable gains, limits, and sample intervals
-  - Automatic hardware discovery via Linux hwmon sysfs interface
-  - KDE-native GUI with overview, inventory, and fan detail pages
+  - Per-fan PID control with configurable gains, limits, and cadence
+  - Multi-sensor aggregation (avg, max, min, median) so one fan can track
+    the hottest component or the average across a thermal zone
+  - Automatic hardware discovery from Linux hwmon sysfs
+  - KDE-native GUI with overview, inventory, fan detail pages, and wizard setup
   - System tray integration with status notifications
-  - Staged draft/applied configuration lifecycle with validation
-  - Auto-tune wizard for suggesting PID gains
-  - Polkit-authenticated privileged operations
-  - Fail-safe fallback: fans driven to maximum speed on daemon failure
+  - Draft, validate, and apply lifecycle for reviewable configuration changes
+  - Auto-tune proposals with explicit acceptance
+  - Polkit-authenticated write operations with read-open DBus access
+  - Fail-safe fallback and degraded-fan recovery

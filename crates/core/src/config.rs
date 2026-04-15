@@ -1,3 +1,14 @@
+//! Daemon-owned configuration types and persistence.
+//!
+//! Defines `AppConfig`, `DraftConfig`, `AppliedConfig`, and all
+//! fan-entry variants. The daemon owns a single authoritative
+//! TOML config file; clients mutate it exclusively through the
+//! Lifecycle DBus interface. All new fields must use
+//! `#[serde(default)]` for backward compatibility.
+//!
+//! This module also re-exports the validation and apply-draft
+//! functions from the `validation` submodule for convenience.
+
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
@@ -7,7 +18,12 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::control::{ActuatorPolicy, AggregationFn, ControlCadence, PidGains, PidLimits};
-use crate::inventory::{ControlMode, FanChannel, InventorySnapshot, SupportState};
+use crate::inventory::ControlMode;
+
+pub use crate::validation::{
+    ValidationError, ValidationResult, apply_draft, find_fan_by_id, temp_source_exists,
+    validate_draft,
+};
 
 /// Current schema version for the daemon-owned configuration file.
 /// Increment when making backward-incompatible changes to the config format.
@@ -415,725 +431,20 @@ fn config_path() -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// Validation — reusable by DBus apply path and boot reconciliation
+// Re-exports from lifecycle module for backward compatibility
 // ---------------------------------------------------------------------------
 
-/// Errors that can occur when validating a draft against current inventory.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ValidationError {
-    /// The referenced fan ID does not exist in the current inventory.
-    FanNotFound { fan_id: String },
-
-    /// The fan exists but its support state prevents safe management.
-    FanNotEnrollable {
-        fan_id: String,
-        support_state: SupportState,
-        reason: String,
-    },
-
-    /// The selected control mode is not supported by this fan's capabilities.
-    UnsupportedControlMode {
-        fan_id: String,
-        requested: ControlMode,
-        available: Vec<ControlMode>,
-    },
-
-    /// A managed fan entry has no control mode selected.
-    MissingControlMode { fan_id: String },
-
-    /// A referenced temperature source ID does not exist in current inventory.
-    TempSourceNotFound { fan_id: String, temp_id: String },
-
-    /// A managed fan entry did not specify a target temperature.
-    MissingTargetTemp { fan_id: String },
-
-    /// A managed fan entry did not specify any temperature sources.
-    NoSensorForManagedFan { fan_id: String },
-
-    /// A managed fan specified invalid cadence bounds.
-    InvalidCadence { fan_id: String, reason: String },
-
-    /// A managed fan specified invalid actuator limits.
-    InvalidActuatorPolicy { fan_id: String, reason: String },
-
-    /// A managed fan specified invalid PID clamp limits.
-    InvalidPidLimits { fan_id: String, reason: String },
-
-    /// A managed fan specified non-finite PID gains (NaN or Infinity).
-    InvalidPidGains { fan_id: String, detail: String },
-
-    /// A managed fan specified an out-of-bounds target temperature.
-    InvalidTargetTemperature { fan_id: String, value: i64 },
-}
-
-impl std::fmt::Display for ValidationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::FanNotFound { fan_id } => {
-                write!(f, "fan '{fan_id}' not found in current inventory")
-            }
-            Self::FanNotEnrollable {
-                fan_id,
-                support_state,
-                reason,
-            } => {
-                write!(
-                    f,
-                    "fan '{fan_id}' is not enrollable (support: {support_state:?}): {reason}"
-                )
-            }
-            Self::UnsupportedControlMode {
-                fan_id,
-                requested,
-                available,
-            } => {
-                let available_str: Vec<String> =
-                    available.iter().map(|m| format!("{m:?}")).collect();
-                write!(
-                    f,
-                    "fan '{fan_id}' does not support control mode {requested:?} (available: {})",
-                    available_str.join(", ")
-                )
-            }
-            Self::MissingControlMode { fan_id } => {
-                write!(f, "managed fan '{fan_id}' has no control mode selected")
-            }
-            Self::TempSourceNotFound { fan_id, temp_id } => {
-                write!(
-                    f,
-                    "temperature source '{temp_id}' for fan '{fan_id}' not found in current inventory"
-                )
-            }
-            Self::MissingTargetTemp { fan_id } => {
-                write!(
-                    f,
-                    "managed fan '{fan_id}' has no target temperature configured"
-                )
-            }
-            Self::NoSensorForManagedFan { fan_id } => {
-                write!(
-                    f,
-                    "managed fan '{fan_id}' has no temperature source configured"
-                )
-            }
-            Self::InvalidCadence { fan_id, reason } => {
-                write!(f, "managed fan '{fan_id}' has invalid cadence: {reason}")
-            }
-            Self::InvalidActuatorPolicy { fan_id, reason } => {
-                write!(
-                    f,
-                    "managed fan '{fan_id}' has invalid actuator policy: {reason}"
-                )
-            }
-            Self::InvalidPidLimits { fan_id, reason } => {
-                write!(f, "managed fan '{fan_id}' has invalid PID limits: {reason}")
-            }
-            Self::InvalidPidGains { fan_id, detail } => {
-                write!(f, "managed fan '{fan_id}' has invalid PID gains: {detail}")
-            }
-            Self::InvalidTargetTemperature { fan_id, value } => {
-                write!(
-                    f,
-                    "managed fan '{fan_id}' has invalid target temperature: {value} m°C (must be 1..=150000)"
-                )
-            }
-        }
-    }
-}
-
-fn validate_cadence(fan_id: &str, cadence: ControlCadence) -> Result<(), ValidationError> {
-    if cadence.sample_interval_ms < 100
-        || cadence.control_interval_ms < 100
-        || cadence.write_interval_ms < 100
-    {
-        return Err(ValidationError::InvalidCadence {
-            fan_id: fan_id.to_string(),
-            reason: "sample, control, and write cadences must each be at least 100ms".to_string(),
-        });
-    }
-
-    if cadence.sample_interval_ms > cadence.control_interval_ms
-        || cadence.control_interval_ms > cadence.write_interval_ms
-    {
-        return Err(ValidationError::InvalidCadence {
-            fan_id: fan_id.to_string(),
-            reason: "cadence must satisfy sample <= control <= write".to_string(),
-        });
-    }
-
-    Ok(())
-}
-
-fn validate_actuator_policy(fan_id: &str, policy: ActuatorPolicy) -> Result<(), ValidationError> {
-    let percent_ok = |value: f64| (0.0..=100.0).contains(&value);
-
-    if !percent_ok(policy.output_min_percent)
-        || !percent_ok(policy.output_max_percent)
-        || !percent_ok(policy.startup_kick_percent)
-    {
-        return Err(ValidationError::InvalidActuatorPolicy {
-            fan_id: fan_id.to_string(),
-            reason: "all actuator percentages must be within 0.0..=100.0".to_string(),
-        });
-    }
-
-    if policy.output_min_percent > policy.output_max_percent {
-        return Err(ValidationError::InvalidActuatorPolicy {
-            fan_id: fan_id.to_string(),
-            reason: "output_min_percent must be <= output_max_percent".to_string(),
-        });
-    }
-
-    if policy.pwm_min > policy.pwm_max {
-        return Err(ValidationError::InvalidActuatorPolicy {
-            fan_id: fan_id.to_string(),
-            reason: "pwm_min must be <= pwm_max".to_string(),
-        });
-    }
-
-    Ok(())
-}
-
-fn validate_pid_limits(fan_id: &str, limits: PidLimits) -> Result<(), ValidationError> {
-    if !limits.is_finite() {
-        return Err(ValidationError::InvalidPidLimits {
-            fan_id: fan_id.to_string(),
-            reason: "PID limits contain non-finite values (NaN or Infinity)".to_string(),
-        });
-    }
-
-    if limits.integral_min > limits.integral_max {
-        return Err(ValidationError::InvalidPidLimits {
-            fan_id: fan_id.to_string(),
-            reason: "integral_min must be <= integral_max".to_string(),
-        });
-    }
-
-    if limits.derivative_min > limits.derivative_max {
-        return Err(ValidationError::InvalidPidLimits {
-            fan_id: fan_id.to_string(),
-            reason: "derivative_min must be <= derivative_max".to_string(),
-        });
-    }
-
-    Ok(())
-}
-
-impl std::error::Error for ValidationError {}
-
-/// Result of validating a draft config against the current inventory.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ValidationResult {
-    /// Fans that passed validation and can be promoted to applied.
-    pub enrollable: Vec<String>,
-
-    /// Fans that failed validation, with reasons.
-    pub rejected: Vec<(String, ValidationError)>,
-}
-
-impl ValidationResult {
-    /// Whether all draft fan entries passed validation.
-    pub fn all_passed(&self) -> bool {
-        self.rejected.is_empty()
-    }
-}
-
-/// Look up a fan channel by stable ID across all devices in the snapshot.
-pub fn find_fan_by_id<'a>(snapshot: &'a InventorySnapshot, fan_id: &str) -> Option<&'a FanChannel> {
-    snapshot
-        .devices
-        .iter()
-        .flat_map(|d| d.fans.iter())
-        .find(|f| f.id == fan_id)
-}
-
-/// Look up whether a temperature sensor ID exists in the snapshot.
-pub fn temp_source_exists(snapshot: &InventorySnapshot, temp_id: &str) -> bool {
-    snapshot
-        .devices
-        .iter()
-        .flat_map(|d| d.temperatures.iter())
-        .any(|t| t.id == temp_id)
-}
-
-/// Validate the draft config against the current inventory snapshot.
-///
-/// Each draft fan entry that is marked `managed: true` is checked:
-/// - The fan ID must exist in the current inventory.
-/// - The fan's support state must be `Available` (safe to enroll).
-/// - The selected control mode must be one the fan reports as supported.
-/// - All referenced temperature source IDs must exist in the inventory.
-///
-/// Returns a `ValidationResult` classifying each fan as enrollable or rejected.
-pub fn validate_draft(draft: &DraftConfig, snapshot: &InventorySnapshot) -> ValidationResult {
-    let mut enrollable = Vec::new();
-    let mut rejected = Vec::new();
-
-    for (fan_id, entry) in &draft.fans {
-        if !entry.managed {
-            // Unmanaged entries in the draft are informational only; skip validation.
-            continue;
-        }
-
-        // 1. Fan must exist.
-        let Some(fan) = find_fan_by_id(snapshot, fan_id) else {
-            rejected.push((
-                fan_id.clone(),
-                ValidationError::FanNotFound {
-                    fan_id: fan_id.clone(),
-                },
-            ));
-            continue;
-        };
-
-        // 2. Fan must be enrollable (support state Available).
-        if fan.support_state != SupportState::Available {
-            rejected.push((
-                fan_id.clone(),
-                ValidationError::FanNotEnrollable {
-                    fan_id: fan_id.clone(),
-                    support_state: fan.support_state,
-                    reason: fan
-                        .support_reason
-                        .clone()
-                        .unwrap_or_else(|| "unsupported hardware".to_string()),
-                },
-            ));
-            continue;
-        }
-
-        // 3. Control mode must be selected and supported.
-        let Some(ref requested_mode) = entry.control_mode else {
-            rejected.push((
-                fan_id.clone(),
-                ValidationError::MissingControlMode {
-                    fan_id: fan_id.clone(),
-                },
-            ));
-            continue;
-        };
-
-        if !fan.control_modes.contains(requested_mode) {
-            rejected.push((
-                fan_id.clone(),
-                ValidationError::UnsupportedControlMode {
-                    fan_id: fan_id.clone(),
-                    requested: *requested_mode,
-                    available: fan.control_modes.clone(),
-                },
-            ));
-            continue;
-        }
-
-        // 4. Managed fan must specify a target temperature.
-        if entry.resolved_target_temp_millidegrees().is_none() {
-            rejected.push((
-                fan_id.clone(),
-                ValidationError::MissingTargetTemp {
-                    fan_id: fan_id.clone(),
-                },
-            ));
-            continue;
-        }
-
-        // 5. Managed fan must have at least one sensor source.
-        if entry.temp_sources.is_empty() {
-            rejected.push((
-                fan_id.clone(),
-                ValidationError::NoSensorForManagedFan {
-                    fan_id: fan_id.clone(),
-                },
-            ));
-            continue;
-        }
-
-        if let Err(error) = validate_cadence(fan_id, entry.resolved_cadence()) {
-            rejected.push((fan_id.clone(), error));
-            continue;
-        }
-
-        if let Err(error) = validate_actuator_policy(fan_id, entry.resolved_actuator_policy()) {
-            rejected.push((fan_id.clone(), error));
-            continue;
-        }
-
-        if let Err(error) = validate_pid_limits(fan_id, entry.resolved_pid_limits()) {
-            rejected.push((fan_id.clone(), error));
-            continue;
-        }
-
-        // PID gains must be finite (not NaN or Infinity).
-        let gains = entry.resolved_pid_gains();
-        if !gains.is_finite() {
-            let mut details = Vec::new();
-            if !gains.kp.is_finite() {
-                details.push(format!("kp={}", gains.kp));
-            }
-            if !gains.ki.is_finite() {
-                details.push(format!("ki={}", gains.ki));
-            }
-            if !gains.kd.is_finite() {
-                details.push(format!("kd={}", gains.kd));
-            }
-            rejected.push((
-                fan_id.clone(),
-                ValidationError::InvalidPidGains {
-                    fan_id: fan_id.clone(),
-                    detail: format!("non-finite PID gains: {}", details.join(", ")),
-                },
-            ));
-            continue;
-        }
-
-        // Target temperature must be within sensible bounds.
-        if let Some(target) = entry.resolved_target_temp_millidegrees() {
-            if target <= 0 || target > 150_000 {
-                rejected.push((
-                    fan_id.clone(),
-                    ValidationError::InvalidTargetTemperature {
-                        fan_id: fan_id.clone(),
-                        value: target,
-                    },
-                ));
-                continue;
-            }
-        }
-
-        // 6. All temperature sources must exist.
-        let mut temp_ok = true;
-        for temp_id in &entry.temp_sources {
-            if !temp_source_exists(snapshot, temp_id) {
-                rejected.push((
-                    fan_id.clone(),
-                    ValidationError::TempSourceNotFound {
-                        fan_id: fan_id.clone(),
-                        temp_id: temp_id.clone(),
-                    },
-                ));
-                temp_ok = false;
-                break;
-            }
-        }
-        if !temp_ok {
-            continue;
-        }
-
-        enrollable.push(fan_id.clone());
-    }
-
-    ValidationResult {
-        enrollable,
-        rejected,
-    }
-}
-
-/// Attempt to promote the draft config to applied after validation.
-///
-/// This performs best-effort partial apply: only fans that pass validation
-/// are promoted. Rejected fans are reported but do not block the rest.
-///
-/// Returns the new `AppliedConfig` (containing only validated fans) and the
-/// full `ValidationResult` so callers can report which fans were skipped.
-pub fn apply_draft(
-    draft: &DraftConfig,
-    snapshot: &InventorySnapshot,
-    applied_at: String,
-    previous_applied: Option<&AppliedConfig>,
-) -> (AppliedConfig, ValidationResult) {
-    let result = validate_draft(draft, snapshot);
-
-    let mut fans = result
-        .enrollable
-        .iter()
-        .filter_map(|fan_id| {
-            let entry = draft.fans.get(fan_id)?;
-            let control_mode = entry.control_mode?;
-            Some((
-                fan_id.clone(),
-                AppliedFanEntry {
-                    control_mode,
-                    temp_sources: entry.temp_sources.clone(),
-                    target_temp_millidegrees: entry.resolved_target_temp_millidegrees()?,
-                    aggregation: entry.resolved_aggregation(),
-                    pid_gains: entry.resolved_pid_gains(),
-                    cadence: entry.resolved_cadence(),
-                    deadband_millidegrees: entry.resolved_deadband_millidegrees(),
-                    actuator_policy: entry.resolved_actuator_policy(),
-                    pid_limits: entry.resolved_pid_limits(),
-                },
-            ))
-        })
-        .collect::<HashMap<_, _>>();
-
-    // Preserve fans from the previous applied config that are not in the draft.
-    // This ensures that enrolling a new fan does not drop existing managed fans.
-    if let Some(prev) = previous_applied {
-        for (fan_id, entry) in &prev.fans {
-            if !fans.contains_key(fan_id) && !draft.fans.contains_key(fan_id) {
-                fans.insert(fan_id.clone(), entry.clone());
-            }
-        }
-    }
-
-    let applied = AppliedConfig {
-        fans,
-        applied_at: Some(applied_at),
-    };
-
-    (applied, result)
-}
-
-// ---------------------------------------------------------------------------
-// Degraded-state and lifecycle event data
-// ---------------------------------------------------------------------------
-
-/// Maximum number of lifecycle events retained for inspection.
-pub const MAX_LIFECYCLE_EVENTS: usize = 64;
-
-/// Reason a fan or the system entered a degraded state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DegradedReason {
-    /// A previously managed fan was restored successfully during boot reconciliation.
-    BootRestored { fan_id: String },
-
-    /// Boot reconciliation completed successfully for all managed fans.
-    BootReconciled { restored_count: u32 },
-
-    /// A previously managed fan no longer appears in the hardware inventory.
-    FanMissing { fan_id: String },
-
-    /// A previously managed fan still exists but is no longer safely enrollable.
-    FanNoLongerEnrollable {
-        fan_id: String,
-        support_state: SupportState,
-        reason: String,
-    },
-
-    /// A previously managed fan's control mode is no longer supported.
-    ControlModeUnavailable { fan_id: String, mode: ControlMode },
-
-    /// A temperature source referenced by an applied fan entry is missing.
-    TempSourceMissing { fan_id: String, temp_id: String },
-
-    /// The applied configuration failed to fully apply at boot — partial recovery.
-    PartialBootRecovery {
-        failed_count: u32,
-        recovered_count: u32,
-    },
-
-    /// The daemon entered fallback mode — previously controlled fans set to max.
-    FallbackActive { affected_fans: Vec<String> },
-
-    /// A managed fan produced no valid sensor data for an extended period.
-    StaleSensorData { fan_id: String },
-
-    /// A degraded fan was automatically recovered via periodic re-assessment.
-    FanRecovered { fan_id: String },
-}
-
-impl std::fmt::Display for DegradedReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::BootRestored { fan_id } => {
-                write!(f, "fan '{fan_id}' restored as managed on boot")
-            }
-            Self::BootReconciled { restored_count } => {
-                write!(
-                    f,
-                    "boot reconciliation restored {restored_count} managed fan(s)"
-                )
-            }
-            Self::FanMissing { fan_id } => {
-                write!(f, "fan '{fan_id}' missing from hardware")
-            }
-            Self::FanNoLongerEnrollable {
-                fan_id,
-                support_state,
-                reason,
-            } => {
-                write!(
-                    f,
-                    "fan '{fan_id}' no longer enrollable ({support_state:?}): {reason}"
-                )
-            }
-            Self::ControlModeUnavailable { fan_id, mode } => {
-                write!(f, "fan '{fan_id}' no longer supports control mode {mode:?}")
-            }
-            Self::TempSourceMissing { fan_id, temp_id } => {
-                write!(
-                    f,
-                    "temperature source '{temp_id}' for fan '{fan_id}' missing"
-                )
-            }
-            Self::PartialBootRecovery {
-                failed_count,
-                recovered_count,
-            } => {
-                write!(
-                    f,
-                    "partial boot recovery: {recovered_count} recovered, {failed_count} failed"
-                )
-            }
-            Self::FallbackActive { affected_fans } => {
-                write!(f, "fallback active for fans: {}", affected_fans.join(", "))
-            }
-            Self::StaleSensorData { fan_id } => {
-                write!(
-                    f,
-                    "fan '{fan_id}' produced no valid sensor data for an extended period"
-                )
-            }
-            Self::FanRecovered { fan_id } => {
-                write!(f, "fan '{fan_id}' recovered from degraded state")
-            }
-        }
-    }
-}
-
-impl DegradedReason {
-    /// Whether a fan degraded for this reason may be automatically recovered
-    /// by re-assessing hardware availability.
-    pub fn is_recoverable(&self) -> bool {
-        match self {
-            Self::TempSourceMissing { .. }
-            | Self::StaleSensorData { .. }
-            | Self::ControlModeUnavailable { .. } => true,
-            Self::FanMissing { .. }
-            | Self::FanNoLongerEnrollable { .. }
-            | Self::BootRestored { .. }
-            | Self::BootReconciled { .. }
-            | Self::PartialBootRecovery { .. }
-            | Self::FallbackActive { .. }
-            | Self::FanRecovered { .. } => false,
-        }
-    }
-}
-
-/// A single bounded lifecycle event recording something that happened.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LifecycleEvent {
-    /// ISO 8601 timestamp when the event occurred.
-    pub timestamp: String,
-
-    /// What happened.
-    pub reason: DegradedReason,
-
-    /// Optional human-readable detail beyond the reason.
-    #[serde(default)]
-    pub detail: Option<String>,
-}
-
-/// A bounded log of lifecycle events, kept to at most `MAX_LIFECYCLE_EVENTS`
-/// entries. Oldest entries are dropped when the log is full.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct LifecycleEventLog {
-    events: Vec<LifecycleEvent>,
-}
-
-impl LifecycleEventLog {
-    /// Create an empty event log.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Append a lifecycle event, dropping the oldest entry if the log is full.
-    pub fn push(&mut self, event: LifecycleEvent) {
-        if self.events.len() >= MAX_LIFECYCLE_EVENTS {
-            self.events.remove(0);
-        }
-        self.events.push(event);
-    }
-
-    /// Read all events in chronological order.
-    pub fn events(&self) -> &[LifecycleEvent] {
-        &self.events
-    }
-
-    /// Clear all events.
-    pub fn clear(&mut self) {
-        self.events.clear();
-    }
-
-    /// Number of events in the log.
-    pub fn len(&self) -> usize {
-        self.events.len()
-    }
-
-    /// Whether the log is empty.
-    pub fn is_empty(&self) -> bool {
-        self.events.is_empty()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Degraded-state tracking (runtime, not persisted)
-// ---------------------------------------------------------------------------
-
-/// Runtime tracking of which fans are currently in a degraded state
-/// and why. This is reconstructed on boot from applied config + live
-/// inventory, and updated whenever lifecycle events cause fans to
-/// enter or leave degraded state.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct DegradedState {
-    /// Per-fan degraded reasons, keyed by stable fan ID.
-    /// A fan may have multiple degraded reasons simultaneously.
-    #[serde(default)]
-    pub entries: HashMap<String, Vec<DegradedReason>>,
-}
-
-impl DegradedState {
-    /// Create an empty degraded state.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Mark a fan as degraded with the given reason(s).
-    pub fn mark_degraded(&mut self, fan_id: String, reasons: Vec<DegradedReason>) {
-        self.entries.insert(fan_id, reasons);
-    }
-
-    /// Clear the degraded state for a specific fan.
-    pub fn clear_fan(&mut self, fan_id: &str) {
-        self.entries.remove(fan_id);
-    }
-
-    /// Clear all degraded entries.
-    pub fn clear_all(&mut self) {
-        self.entries.clear();
-    }
-
-    /// Whether any fans are currently degraded.
-    pub fn has_degraded(&self) -> bool {
-        !self.entries.is_empty()
-    }
-
-    /// Get the set of fan IDs that are currently degraded.
-    pub fn degraded_fan_ids(&self) -> impl Iterator<Item = &str> {
-        self.entries.keys().map(|s| s.as_str())
-    }
-
-    /// Whether a specific fan has any recoverable degraded reasons.
-    /// A fan is considered recoverable if at least one of its reasons
-    /// is transient (sensor missing, stale data, control mode unavailable).
-    pub fn is_fan_recoverable(&self, fan_id: &str) -> bool {
-        self.entries
-            .get(fan_id)
-            .map(|reasons| reasons.iter().any(|r| r.is_recoverable()))
-            .unwrap_or(false)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Unit tests
-// ---------------------------------------------------------------------------
+pub use crate::lifecycle::{
+    DegradedReason, DegradedState, LifecycleEvent, LifecycleEventLog, MAX_LIFECYCLE_EVENTS,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::control::{ActuatorPolicy, AggregationFn, ControlCadence, PidGains, PidLimits};
-    use crate::inventory::{HwmonDevice, SupportState, TemperatureSensor};
+    use crate::inventory::{
+        ControlMode, FanChannel, HwmonDevice, InventorySnapshot, SupportState, TemperatureSensor,
+    };
 
     fn managed_draft_entry() -> DraftFanEntry {
         DraftFanEntry {
@@ -1202,9 +513,11 @@ mod tests {
         let serialized = toml::to_string_pretty(&config).unwrap();
         let deserialized: AppConfig = toml::from_str(&serialized).unwrap();
 
-        assert!(deserialized
-            .draft_fan("hwmon-test-0000000000000001-fan1")
-            .is_some());
+        assert!(
+            deserialized
+                .draft_fan("hwmon-test-0000000000000001-fan1")
+                .is_some()
+        );
         let entry = deserialized
             .draft_fan("hwmon-test-0000000000000001-fan1")
             .unwrap();
@@ -1290,9 +603,11 @@ mod tests {
 
         let result = validate_draft(&draft, &snapshot);
         assert!(result.all_passed());
-        assert!(result
-            .enrollable
-            .contains(&"hwmon-test-0000000000000001-fan1".to_string()));
+        assert!(
+            result
+                .enrollable
+                .contains(&"hwmon-test-0000000000000001-fan1".to_string())
+        );
         assert!(result.rejected.is_empty());
     }
 
@@ -1410,9 +725,11 @@ mod tests {
             apply_draft(&draft, &snapshot, "2026-04-11T12:00:00Z".to_string(), None);
 
         // Only the valid fan should appear in applied.
-        assert!(applied
-            .fans
-            .contains_key("hwmon-test-0000000000000001-fan1"));
+        assert!(
+            applied
+                .fans
+                .contains_key("hwmon-test-0000000000000001-fan1")
+        );
         assert!(!applied.fans.contains_key("ghost-fan"));
         assert_eq!(result.rejected.len(), 1);
     }
@@ -1523,40 +840,6 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_event_log_bounds() {
-        let mut log = LifecycleEventLog::new();
-        for i in 0..MAX_LIFECYCLE_EVENTS + 10 {
-            log.push(LifecycleEvent {
-                timestamp: format!("2026-04-11T12:{i:02}:00Z"),
-                reason: DegradedReason::FanMissing {
-                    fan_id: format!("fan-{i}"),
-                },
-                detail: None,
-            });
-        }
-        assert_eq!(log.len(), MAX_LIFECYCLE_EVENTS);
-        // Oldest events should have been dropped.
-        let first = &log.events()[0];
-        assert!(first.timestamp.contains("10")); // first retained is index 10
-    }
-
-    #[test]
-    fn degraded_reason_display() {
-        let reason = DegradedReason::FanMissing {
-            fan_id: "fan-1".to_string(),
-        };
-        assert!(format!("{reason}").contains("fan-1"));
-
-        let reason = DegradedReason::PartialBootRecovery {
-            failed_count: 2,
-            recovered_count: 3,
-        };
-        let text = format!("{reason}");
-        assert!(text.contains("3 recovered"));
-        assert!(text.contains("2 failed"));
-    }
-
-    #[test]
     fn config_version_rejects_future() {
         let future_toml = r#"
 version = 999
@@ -1640,65 +923,6 @@ version = 999
     fn state_directory_env_ignores_empty_values() {
         assert!(state_directory_from_env(Some("   ".to_string())).is_none());
         assert!(state_directory_from_env(None).is_none());
-    }
-
-    #[test]
-    fn is_recoverable_classifies_degraded_reasons() {
-        assert!(DegradedReason::TempSourceMissing {
-            fan_id: "f1".into(),
-            temp_id: "t1".into(),
-        }
-        .is_recoverable());
-        assert!(DegradedReason::StaleSensorData {
-            fan_id: "f1".into(),
-        }
-        .is_recoverable());
-        assert!(DegradedReason::ControlModeUnavailable {
-            fan_id: "f1".into(),
-            mode: ControlMode::Pwm,
-        }
-        .is_recoverable());
-        assert!(!DegradedReason::FanMissing {
-            fan_id: "f1".into(),
-        }
-        .is_recoverable());
-        assert!(!DegradedReason::FanNoLongerEnrollable {
-            fan_id: "f1".into(),
-            support_state: SupportState::Unavailable,
-            reason: "test".into(),
-        }
-        .is_recoverable());
-        assert!(!DegradedReason::FanRecovered {
-            fan_id: "f1".into(),
-        }
-        .is_recoverable());
-    }
-
-    #[test]
-    fn degraded_state_is_fan_recoverable() {
-        let mut state = DegradedState::new();
-        state.mark_degraded(
-            "f1".into(),
-            vec![
-                DegradedReason::TempSourceMissing {
-                    fan_id: "f1".into(),
-                    temp_id: "t1".into(),
-                },
-                DegradedReason::FanMissing {
-                    fan_id: "f1".into(),
-                },
-            ],
-        );
-        assert!(state.is_fan_recoverable("f1"));
-
-        let mut state_no_recovery = DegradedState::new();
-        state_no_recovery.mark_degraded(
-            "f1".into(),
-            vec![DegradedReason::FanMissing {
-                fan_id: "f1".into(),
-            }],
-        );
-        assert!(!state_no_recovery.is_fan_recoverable("f1"));
     }
 
     #[test]
@@ -1864,68 +1088,86 @@ version = 999
 
     #[test]
     fn pid_gains_is_finite_method() {
-        assert!(PidGains {
-            kp: 1.0,
-            ki: 0.5,
-            kd: 0.1
-        }
-        .is_finite());
-        assert!(PidGains {
-            kp: -1.0,
-            ki: 0.0,
-            kd: 100.0
-        }
-        .is_finite());
-        assert!(!PidGains {
-            kp: f64::NAN,
-            ki: 1.0,
-            kd: 1.0
-        }
-        .is_finite());
-        assert!(!PidGains {
-            kp: 1.0,
-            ki: f64::INFINITY,
-            kd: 1.0
-        }
-        .is_finite());
-        assert!(!PidGains {
-            kp: 1.0,
-            ki: 1.0,
-            kd: f64::NEG_INFINITY
-        }
-        .is_finite());
+        assert!(
+            PidGains {
+                kp: 1.0,
+                ki: 0.5,
+                kd: 0.1
+            }
+            .is_finite()
+        );
+        assert!(
+            PidGains {
+                kp: -1.0,
+                ki: 0.0,
+                kd: 100.0
+            }
+            .is_finite()
+        );
+        assert!(
+            !PidGains {
+                kp: f64::NAN,
+                ki: 1.0,
+                kd: 1.0
+            }
+            .is_finite()
+        );
+        assert!(
+            !PidGains {
+                kp: 1.0,
+                ki: f64::INFINITY,
+                kd: 1.0
+            }
+            .is_finite()
+        );
+        assert!(
+            !PidGains {
+                kp: 1.0,
+                ki: 1.0,
+                kd: f64::NEG_INFINITY
+            }
+            .is_finite()
+        );
     }
 
     #[test]
     fn pid_limits_is_finite_method() {
-        assert!(PidLimits {
-            integral_min: -500.0,
-            integral_max: 500.0,
-            derivative_min: -5.0,
-            derivative_max: 5.0,
-        }
-        .is_finite());
-        assert!(!PidLimits {
-            integral_min: f64::NAN,
-            integral_max: 500.0,
-            derivative_min: -5.0,
-            derivative_max: 5.0,
-        }
-        .is_finite());
-        assert!(!PidLimits {
-            integral_min: -500.0,
-            integral_max: f64::INFINITY,
-            derivative_min: -5.0,
-            derivative_max: 5.0,
-        }
-        .is_finite());
-        assert!(!PidLimits {
-            integral_min: -500.0,
-            integral_max: 500.0,
-            derivative_min: f64::NEG_INFINITY,
-            derivative_max: 5.0,
-        }
-        .is_finite());
+        assert!(
+            PidLimits {
+                integral_min: -500.0,
+                integral_max: 500.0,
+                derivative_min: -5.0,
+                derivative_max: 5.0,
+            }
+            .is_finite()
+        );
+        assert!(
+            !PidLimits {
+                integral_min: f64::NAN,
+                integral_max: 500.0,
+                derivative_min: -5.0,
+                derivative_max: 5.0,
+            }
+            .is_finite()
+        );
+        assert!(
+            !PidLimits {
+                integral_min: -500.0,
+                integral_max: f64::INFINITY,
+                derivative_min: -5.0,
+                derivative_max: 5.0,
+            }
+            .is_finite()
+        );
+        assert!(
+            !PidLimits {
+                integral_min: -500.0,
+                integral_max: 500.0,
+                derivative_min: f64::NEG_INFINITY,
+                derivative_max: 5.0,
+            }
+            .is_finite()
+        );
     }
 
     #[test]

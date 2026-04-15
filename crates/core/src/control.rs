@@ -1,3 +1,12 @@
+//! PID control types, gains, and aggregation functions.
+//!
+//! Defines the shared control-plane types used by both the daemon
+//! and core: `PidGains`, `PidController`, `AggregationFn`,
+//! `ControlCadence`, `ActuatorPolicy`, `PidLimits`, and
+//! `AutoTuneProposal`. The PID controller is a pure function of
+//! its gains, limits, and error history — it must not own file
+//! handles or perform I/O.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,7 +38,7 @@ impl AggregationFn {
                 let mut sorted = readings.to_vec();
                 sorted.sort_unstable();
                 let mid = sorted.len() / 2;
-                if sorted.len() % 2 == 0 {
+                if sorted.len().is_multiple_of(2) {
                     Some((sorted[mid - 1] + sorted[mid]) / 2)
                 } else {
                     Some(sorted[mid])

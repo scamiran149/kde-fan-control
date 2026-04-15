@@ -44,12 +44,12 @@ override_dh_auto_install:
 	install -Dm644 packaging/org.kde.fancontrol.desktop \
 		$(CURDIR)/debian/kde-fan-control/usr/share/applications/org.kde.fancontrol.desktop
 
-	install -Dm644 packaging/icons/hicolor/scalable/apps/kde-fan-control.svg \
-		$(CURDIR)/debian/kde-fan-control/usr/share/icons/hicolor/scalable/apps/kde-fan-control.svg
-	install -Dm644 packaging/icons/hicolor/48x48/apps/kde-fan-control.png \
-		$(CURDIR)/debian/kde-fan-control/usr/share/icons/hicolor/48x48/apps/kde-fan-control.png
-	install -Dm644 packaging/icons/hicolor/128x128/apps/kde-fan-control.png \
-		$(CURDIR)/debian/kde-fan-control/usr/share/icons/hicolor/128x128/apps/kde-fan-control.png
+	install -Dm644 packaging/icons/hicolor/scalable/apps/org.kde.fancontrol.svg \
+		$(CURDIR)/debian/kde-fan-control/usr/share/icons/hicolor/scalable/apps/org.kde.fancontrol.svg
+	install -Dm644 packaging/icons/hicolor/48x48/apps/org.kde.fancontrol.png \
+		$(CURDIR)/debian/kde-fan-control/usr/share/icons/hicolor/48x48/apps/org.kde.fancontrol.png
+	install -Dm644 packaging/icons/hicolor/128x128/apps/org.kde.fancontrol.png \
+		$(CURDIR)/debian/kde-fan-control/usr/share/icons/hicolor/128x128/apps/org.kde.fancontrol.png
 
 	install -Dm644 packaging/org.kde.fancontrol.metainfo.xml \
 		$(CURDIR)/debian/kde-fan-control/usr/share/metainfo/org.kde.fancontrol.metainfo.xml

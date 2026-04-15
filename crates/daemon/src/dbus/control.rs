@@ -221,3 +221,288 @@ impl ControlIface {
     #[zbus(signal, name = "AutoTuneCompleted")]
     async fn auto_tune_completed(emitter: &SignalEmitter<'_>, fan_id: &str) -> zbus::Result<()>;
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use kde_fan_control_core::config::{AppConfig, DegradedState};
+    use kde_fan_control_core::control::AggregationFn;
+    use kde_fan_control_core::inventory::ControlMode;
+    use kde_fan_control_core::lifecycle::OwnedFanSet;
+    use tokio::sync::RwLock;
+
+    use crate::control::supervisor::ControlSupervisor;
+    use crate::dbus::control::ControlIface;
+    use crate::test_support::{ControlFixture, applied_config_for, test_snapshot};
+
+    async fn auto_tune_test_harness(
+        fixture: &ControlFixture,
+    ) -> (
+        ControlSupervisor,
+        Arc<RwLock<AppConfig>>,
+        Arc<RwLock<DegradedState>>,
+    ) {
+        let snapshot = Arc::new(RwLock::new(test_snapshot(fixture.root())));
+        let applied = applied_config_for(
+            "hwmon-test-0000000000000001-fan1",
+            "hwmon-test-0000000000000001-temp1",
+        );
+        let config = Arc::new(RwLock::new(AppConfig {
+            applied: Some(applied),
+            ..AppConfig::default()
+        }));
+        let owned = Arc::new(RwLock::new(OwnedFanSet::new()));
+        owned.write().await.claim_fan(
+            "hwmon-test-0000000000000001-fan1",
+            ControlMode::Pwm,
+            fixture.pwm_path().to_string_lossy().as_ref(),
+        );
+        let degraded = Arc::new(RwLock::new(DegradedState::new()));
+        let supervisor = ControlSupervisor::new(
+            Arc::clone(&snapshot),
+            Arc::clone(&config),
+            owned,
+            Arc::clone(&degraded),
+        );
+        supervisor.set_auto_tune_observation_window_ms(40).await;
+        supervisor.reconcile().await;
+        (supervisor, config, degraded)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_iface_get_control_status_serializes_live_snapshots() {
+        let fixture = ControlFixture::new();
+        fixture.write_temp("56000\n");
+        fixture.write_pwm_seed("0\n");
+
+        let snapshot = Arc::new(RwLock::new(test_snapshot(fixture.root())));
+        let config = Arc::new(RwLock::new(AppConfig {
+            applied: Some(applied_config_for(
+                "hwmon-test-0000000000000001-fan1",
+                "hwmon-test-0000000000000001-temp1",
+            )),
+            ..AppConfig::default()
+        }));
+        let owned = Arc::new(RwLock::new(OwnedFanSet::new()));
+        owned.write().await.claim_fan(
+            "hwmon-test-0000000000000001-fan1",
+            ControlMode::Pwm,
+            fixture.pwm_path().to_string_lossy().as_ref(),
+        );
+        let degraded = Arc::new(RwLock::new(DegradedState::new()));
+        let supervisor = ControlSupervisor::new(snapshot, config, owned, degraded);
+        supervisor.reconcile().await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        let iface = ControlIface {
+            supervisor,
+            config: Arc::new(RwLock::new(AppConfig::default())),
+        };
+        let status = iface
+            .get_control_status()
+            .await
+            .expect("control status should serialize");
+        assert!(status.contains("hwmon-test-0000000000000001-fan1"));
+        assert!(status.contains("aggregated_temp_millidegrees"));
+        assert!(status.contains("mapped_pwm"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_iface_accept_auto_tune_stages_proposed_gains_into_draft() {
+        let fixture = ControlFixture::new();
+        fixture.write_temp("60000\n");
+        fixture.write_pwm_seed("0\n");
+
+        let (supervisor, config, _) = auto_tune_test_harness(&fixture).await;
+        supervisor
+            .start_auto_tune("hwmon-test-0000000000000001-fan1")
+            .await
+            .expect("auto-tune should start");
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        fixture.write_temp("59000\n");
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        fixture.write_temp("57500\n");
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        let applied_gains = config
+            .read()
+            .await
+            .applied
+            .as_ref()
+            .and_then(|applied| applied.fans.get("hwmon-test-0000000000000001-fan1"))
+            .expect("applied entry should exist")
+            .pid_gains;
+
+        let iface = ControlIface {
+            supervisor,
+            config: Arc::clone(&config),
+        };
+        let updated = iface
+            .accept_auto_tune_for_test("hwmon-test-0000000000000001-fan1", true)
+            .await
+            .expect("accepted gains should stage into draft");
+        assert!(updated.contains("pid_gains"));
+
+        let config_guard = config.read().await;
+        let draft_entry = config_guard
+            .draft
+            .fans
+            .get("hwmon-test-0000000000000001-fan1")
+            .expect("draft entry should exist");
+        assert!(draft_entry.pid_gains.is_some());
+        assert_ne!(draft_entry.pid_gains.expect("gains"), applied_gains);
+        assert_eq!(
+            config_guard
+                .applied
+                .as_ref()
+                .and_then(|applied| applied.fans.get("hwmon-test-0000000000000001-fan1"))
+                .expect("applied entry should exist")
+                .pid_gains,
+            applied_gains
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_iface_profile_mutations_enforce_authorization_and_stage_draft_updates() {
+        let fixture = ControlFixture::new();
+        fixture.write_temp("60000\n");
+        fixture.write_pwm_seed("0\n");
+
+        let (supervisor, config, _) = auto_tune_test_harness(&fixture).await;
+        let iface = ControlIface {
+            supervisor,
+            config: Arc::clone(&config),
+        };
+
+        use zbus::fdo;
+        let unauthorized_accept = iface
+            .accept_auto_tune_for_test("hwmon-test-0000000000000001-fan1", false)
+            .await;
+        assert!(matches!(
+            unauthorized_accept,
+            Err(fdo::Error::AccessDenied(_))
+        ));
+
+        let profile_json = serde_json::json!({
+            "target_temp_millidegrees": 68000,
+            "aggregation": "max",
+            "pid_gains": { "kp": 2.5, "ki": 0.3, "kd": 0.9 },
+            "cadence": {
+                "sample_interval_ms": 500,
+                "control_interval_ms": 1000,
+                "write_interval_ms": 1500
+            },
+            "deadband_millidegrees": 2000,
+            "actuator_policy": {
+                "output_min_percent": 10.0,
+                "output_max_percent": 95.0,
+                "pwm_min": 15,
+                "pwm_max": 240,
+                "startup_kick_percent": 45.0,
+                "startup_kick_ms": 1200
+            },
+            "pid_limits": {
+                "integral_min": -20.0,
+                "integral_max": 20.0,
+                "derivative_min": -6.0,
+                "derivative_max": 6.0
+            }
+        })
+        .to_string();
+
+        let unauthorized_profile = iface
+            .set_draft_fan_control_profile_for_test(
+                "hwmon-test-0000000000000001-fan1",
+                &profile_json,
+                false,
+            )
+            .await;
+        assert!(matches!(
+            unauthorized_profile,
+            Err(fdo::Error::AccessDenied(_))
+        ));
+
+        let updated = iface
+            .set_draft_fan_control_profile_for_test(
+                "hwmon-test-0000000000000001-fan1",
+                &profile_json,
+                true,
+            )
+            .await
+            .expect("authorized profile update should succeed");
+        assert!(updated.contains("68000"));
+
+        let config_guard = config.read().await;
+        let draft_entry = config_guard
+            .draft
+            .fans
+            .get("hwmon-test-0000000000000001-fan1")
+            .expect("draft entry should exist");
+        assert_eq!(draft_entry.target_temp_millidegrees, Some(68_000));
+        assert_eq!(draft_entry.aggregation, Some(AggregationFn::Max));
+        assert_eq!(draft_entry.pid_gains.expect("pid gains").kp, 2.5);
+        assert_eq!(
+            draft_entry.cadence.expect("cadence").write_interval_ms,
+            1_500
+        );
+        assert_eq!(
+            draft_entry
+                .actuator_policy
+                .expect("actuator policy")
+                .startup_kick_percent,
+            45.0
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn control_iface_partial_profile_updates_preserve_unspecified_draft_fields() {
+        let fixture = ControlFixture::new();
+        fixture.write_temp("60000\n");
+        fixture.write_pwm_seed("0\n");
+
+        let (supervisor, config, _) = auto_tune_test_harness(&fixture).await;
+        let iface = ControlIface {
+            supervisor,
+            config: Arc::clone(&config),
+        };
+
+        iface
+            .set_draft_fan_control_profile_for_test(
+                "hwmon-test-0000000000000001-fan1",
+                &serde_json::json!({
+                    "target_temp_millidegrees": 68000,
+                    "aggregation": "max",
+                    "pid_gains": { "kp": 2.5, "ki": 0.3, "kd": 0.9 }
+                })
+                .to_string(),
+                true,
+            )
+            .await
+            .expect("seed profile update should succeed");
+
+        iface
+            .set_draft_fan_control_profile_for_test(
+                "hwmon-test-0000000000000001-fan1",
+                &serde_json::json!({
+                    "deadband_millidegrees": 3500
+                })
+                .to_string(),
+                true,
+            )
+            .await
+            .expect("partial profile update should succeed");
+
+        let config_guard = config.read().await;
+        let draft_entry = config_guard
+            .draft
+            .fans
+            .get("hwmon-test-0000000000000001-fan1")
+            .expect("draft entry should exist");
+        assert_eq!(draft_entry.target_temp_millidegrees, Some(68_000));
+        assert_eq!(draft_entry.aggregation, Some(AggregationFn::Max));
+        assert_eq!(draft_entry.pid_gains.expect("pid gains").kp, 2.5);
+        assert_eq!(draft_entry.deadband_millidegrees, Some(3_500));
+    }
+}

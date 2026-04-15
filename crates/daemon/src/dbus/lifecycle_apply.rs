@@ -42,6 +42,50 @@ pub fn release_removed_owned_fans(
     failures
 }
 
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use kde_fan_control_core::inventory::ControlMode;
+    use kde_fan_control_core::lifecycle::OwnedFanSet;
+
+    use crate::dbus::lifecycle_apply::release_removed_owned_fans;
+    use crate::test_support::ControlFixture;
+
+    #[test]
+    fn release_removed_owned_fans_drops_fans_not_in_next_applied_set() {
+        let fixture = ControlFixture::new();
+        fixture.write_pwm_seed("0\n");
+
+        let mut owned = OwnedFanSet::new();
+        owned.claim_fan(
+            "fan-a",
+            ControlMode::Pwm,
+            fixture.pwm_path().to_string_lossy().as_ref(),
+        );
+        owned.claim_fan("fan-b", ControlMode::Pwm, "/sys/class/hwmon/hwmon0/pwm2");
+
+        let next_owned = HashSet::from(["fan-b".to_string()]);
+        let failures = release_removed_owned_fans(&mut owned, &next_owned);
+
+        assert!(failures.is_empty());
+        assert!(!owned.owns("fan-a"));
+        assert!(owned.owns("fan-b"));
+    }
+
+    #[test]
+    fn release_removed_owned_fans_keeps_ownership_on_fallback_failure() {
+        let mut owned = OwnedFanSet::new();
+        owned.claim_fan("fan-a", ControlMode::Pwm, "/definitely/missing/pwm1");
+
+        let next_owned = HashSet::new();
+        let failures = release_removed_owned_fans(&mut owned, &next_owned);
+
+        assert_eq!(failures.len(), 1);
+        assert!(owned.owns("fan-a"));
+    }
+}
+
 impl LifecycleIface {
     pub async fn apply_draft_transaction(
         &self,

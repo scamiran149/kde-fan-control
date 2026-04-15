@@ -1,3 +1,13 @@
+//! Hardware inventory discovery and types.
+//!
+//! Scans `/sys/class/hwmon` to build an `InventorySnapshot` of
+//! temperature sensors, fan channels, and their capabilities. Each
+//! `HwmonDevice` carries a stable identity string derived from
+//! udev or sysfs for cross-boot persistence.
+//!
+//! This module is read-only with respect to hardware: it discovers
+//! and describes, but must never write to sysfs fan-control attributes.
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
@@ -113,7 +123,7 @@ fn discover_device(hwmon_path: &Path) -> io::Result<HwmonDevice> {
     let temperatures = temp_channels
         .into_iter()
         .map(|channel| TemperatureSensor {
-            id: format!("{}-temp{}", device_id, channel),
+            id: format!("{device_id}-temp{channel}"),
             channel,
             label: read_trimmed(hwmon_path.join(format!("temp{channel}_label"))).unwrap_or(None),
             friendly_name: None,
@@ -175,7 +185,7 @@ fn build_fan_channel(hwmon_path: &Path, device_id: &str, channel: u32) -> io::Re
     };
 
     Ok(FanChannel {
-        id: format!("{}-fan{}", device_id, channel),
+        id: format!("{device_id}-fan{channel}"),
         channel,
         label: read_trimmed(hwmon_path.join(format!("fan{channel}_label")))?,
         friendly_name: None,

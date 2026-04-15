@@ -75,3 +75,41 @@ pub async fn run_fallback_recorder(
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use kde_fan_control_core::config::{AppConfig, LifecycleEventLog};
+    use kde_fan_control_core::inventory::ControlMode;
+    use kde_fan_control_core::lifecycle::OwnedFanSet;
+
+    use super::record_fallback_incident_for_owned;
+
+    #[test]
+    fn shared_fallback_recorder_persists_incident_for_graceful_shutdown() {
+        let mut owned = OwnedFanSet::new();
+        owned.claim_fan("fan-1", ControlMode::Pwm, "/definitely/missing/pwm1");
+        let mut config = AppConfig::default();
+        let mut events = LifecycleEventLog::new();
+        let mut fallback_fan_ids = std::collections::HashSet::new();
+
+        let result = record_fallback_incident_for_owned(
+            &owned,
+            &mut config,
+            &mut events,
+            &mut fallback_fan_ids,
+            "ctrl-c shutdown".to_string(),
+        );
+
+        assert_eq!(result.failed.len(), 1);
+        let incident = config
+            .fallback_incident
+            .as_ref()
+            .expect("fallback incident");
+        assert_eq!(incident.affected_fans, vec!["fan-1"]);
+        assert!(fallback_fan_ids.contains("fan-1"));
+        assert!(matches!(
+            events.events().last().map(|event| &event.reason),
+            Some(kde_fan_control_core::config::DegradedReason::FallbackActive { affected_fans }) if affected_fans == &vec!["fan-1".to_string()]
+        ));
+    }
+}

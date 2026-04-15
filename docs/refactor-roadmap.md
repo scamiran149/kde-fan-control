@@ -51,69 +51,68 @@ focused, well-documented modules across the codebase.
 | `safety/ownership.rs` | 84 | Owned-fan persistence helpers |
 | `safety/panic_hook.rs` | 145 | PanicFallbackMirror + panic hook installation |
 
-## Remaining Work
+### Phase 2: Core crate — config.rs (1954 → 1185 + 453 validation.rs)
 
-### Phase 2: Core crate — config.rs (1954 → ~3 files)
+Extracted `validation.rs` (453 lines) with `ValidationError`, `ValidationResult`,
+`validate_draft`, `apply_draft`, `find_fan_by_id`, `temp_source_exists`, and
+private validation helpers. Moved `DegradedReason`, `DegradedState`,
+`LifecycleEvent`, `LifecycleEventLog`, `MAX_LIFECYCLE_EVENTS` to `lifecycle`.
+Re-exports in `config.rs` preserve backward compatibility. `config.rs` now 1185 lines.
 
-| Target file | Est. LOC | Content |
+### Phase 3: Core crate — lifecycle.rs (1887 → lifecycle/ directory, 6 files)
+
+Converted `lifecycle.rs` into `lifecycle/` directory with focused submodules:
+
+| Module | Lines | Content |
 |---|---:|---|
-| `config.rs` | ~290 | AppConfig, DraftConfig, DraftFanEntry, AppliedConfig, AppliedFanEntry, FriendlyNames, FallbackIncident, load/save, resolved_* accessors |
-| `validation.rs` | ~330 | ValidationError, ValidationResult, validate_draft, apply_draft, validate_cadence/actuator_limits/pid_limits, find_fan_by_id, temp_source_exists |
-| `paths.rs` | ~15 | app_state_dir, state_directory_from_env, CONFIG_VERSION |
+| `lifecycle/mod.rs` | 31 | Re-exports for backward compatibility |
+| `lifecycle/state.rs` | 314 | DegradedReason, DegradedState, LifecycleEvent, LifecycleEventLog |
+| `lifecycle/reconcile.rs` | 699 | ReconcileOutcome, reconcile_applied_config, perform_boot_reconciliation |
+| `lifecycle/reassess.rs` | 238 | ReassessOutcome, reassess_single_fan |
+| `lifecycle/fallback.rs` | 186 | FallbackResult, PWM constants, write_fallback_* |
+| `lifecycle/runtime.rs` | 356 | ControlRuntimeSnapshot, FanRuntimeStatus, RuntimeState |
+| `lifecycle/owned.rs` | 109 | OwnedFanSet |
+| `lifecycle/time.rs` | 33 | format_iso8601_now, civil_from_days |
 
-Move these types from `config.rs` to `lifecycle.rs` (where they belong semantically):
-- `DegradedReason` + Display + is_recoverable
-- `DegradedState` + impl
-- `LifecycleEvent`, `LifecycleEventLog`, `MAX_LIFECYCLE_EVENTS`
+### Phase 4: CLI — main.rs (1587 → 318 + 5 command modules)
 
-### Phase 3: Core crate — lifecycle.rs (1639 → ~3 files)
+Extracted `commands/` directory with focused submodules:
 
-| Target file | Est. LOC | Content |
+| Module | Lines | Content |
 |---|---:|---|
-| `lifecycle.rs` | ~350 | OwnedFanSet, FallbackResult, lifecycle_event_from_fallback_incident, DegradedReason/State/LifecycleEvent (moved from config) |
-| `lifecycle/reconcile.rs` | ~200 | reconcile_applied_config, ReconcileOutcome, ReconcileResult, perform_boot_reconciliation |
-| `lifecycle/fallback.rs` | ~150 | write_fallback_for_owned, write_fallback_single, PWM_SAFE_MAX, PWM_ENABLE_MANUAL |
-| `lifecycle/runtime.rs` | ~250 | ControlRuntimeSnapshot, FanRuntimeStatus, RuntimeState, RuntimeState::build |
-| `lifecycle/paths.rs` | ~10 | format_iso8601_now (or merge into existing time helper) |
+| `main.rs` | 318 | CLI args, proxy defs, dispatch |
+| `commands/inventory.rs` | 142 | inventory subcommand |
+| `commands/status.rs` | 489 | state/status subcommand |
+| `commands/lifecycle.rs` | 560 | draft/apply/discard/validate/degraded etc. |
+| `commands/control.rs` | 256 | control set, auto-tune subcommands |
+| `commands/friendly.rs` | 35 | rename/unname sensor/fan names |
 
-### Phase 4: CLI — main.rs (1587 → command module directory)
+### Phase 5: Daemon — test relocation (948 → 15 LOC prod)
 
-| Target file | Est. LOC | Content |
-|---|---:|---|
-| `main.rs` | ~80 | Arg parsing, dispatch to command modules |
-| `commands/mod.rs` | ~20 | Re-exports |
-| `commands/inventory.rs` | ~120 | `inventory` subcommand |
-| `commands/status.rs` | ~120 | `status` subcommand |
-| `commands/lifecycle.rs` | ~250 | draft/apply/discard/validate/degraded/events/runtime subcommands |
-| `commands/control.rs` | ~180 | control status, auto-tune, profile subcommands |
-| `commands/friendly.rs` | ~100 | set-sensor-name/set-fan-name/remove-sensor-name/remove-fan-name |
+Moved 933 lines of integration tests from `daemon/main.rs` into companion `#[cfg(test]`
+modules beside the production code they test. Added `test_support.rs` with shared
+fixtures. `main.rs` is now exactly 15 lines of production code.
 
-Pattern: each command module owns its zbus proxy calls, JSON output formatting,
-and arg definitions. `main.rs` just wires clap subcommands to dispatch.
+| Test location | Tests |
+|---|---|
+| `control/supervisor.rs` | 6 supervisor/degrade tests |
+| `control/autotune.rs` | 3 auto-tune tests |
+| `dbus/control.rs` | 4 control iface tests |
+| `dbus/lifecycle_apply.rs` | 2 release_removed_owned tests |
+| `safety/fallback.rs` | 1 fallback recorder test |
+| `safety/panic_hook.rs` | 1 panic path test |
 
-### Phase 5: Daemon — test relocation (948 → ~15 LOC prod)
-
-Move the 933-line `#[cfg(test)] mod tests` block from `daemon/main.rs` into
-companion test modules beside the production code they test:
-
-| Test area | Current location | Move to |
-|---|---|---|
-| Control supervisor (fan loops, degradation, auto-tune) | `main.rs` | `control/supervisor.rs` / `control/autotune.rs` bottom |
-| DBus control iface (auth, profile mutations) | `main.rs` | `dbus/control.rs` bottom |
-| Fallback / ownership (incident recording) | `main.rs` | `safety/fallback.rs` / `safety/ownership.rs` bottom |
-
-### Phase 6: Core crate — borderline files (review, not commit)
+### Phase 6: Borderline files — review (no split needed)
 
 | File | Lines | Assessment |
 |---|---:|---|
-| `overview.rs` | 512 | Review — may be coherent enough as-is. Contains overview snapshot types + serialization. Split if it grows. |
-| `inventory.rs` | 493 | Review — hardware discovery + inventory types. Discovery logic could extract to `inventory/discover.rs` if it grows. |
+| `overview.rs` | 512 | Coherent — ~265 LOC production + ~250 LOC tests. Leave as-is. |
+| `inventory.rs` | 493 | Coherent — discovery + types form a natural unit. Leave as-is. |
 
 ### Phase 7: Documentation pass
 
-Add `//!` module docs to every file created during Phase 1 that doesn't yet
-have one. Add `///` doc comments on all `pub` types and non-obvious methods.
-Add "why" comments at lock-ordering, fallback-safety, and panic-safety points.
+Added `//!` module-level doc comments to 23 files across all three crates
+(core, daemon, CLI). 27 other files already had docs and were skipped.
 
 ## Not in Scope (GUI files)
 

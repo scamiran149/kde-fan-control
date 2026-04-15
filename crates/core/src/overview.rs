@@ -1,3 +1,17 @@
+//! Overview page data structures for the GUI.
+//!
+//! Produces pre-computed, display-ready snapshots split into two
+//! independent paths:
+//!
+//! - **Structure**: fan identity, display names, ordering buckets,
+//!   and state icons — changes only when fan membership or status
+//!   category changes.
+//! - **Telemetry**: live temperature, RPM, output percentage, and
+//!   visual state — changes on every sensor poll.
+//!
+//! This module must not contain control-loop policy; it is a
+//! read-only projection of `InventorySnapshot` and `RuntimeState`.
+
 use serde::{Deserialize, Serialize};
 
 use crate::config::AppConfig;
@@ -98,15 +112,15 @@ fn state_color(status: &FanRuntimeStatus, high_temp_alert: bool) -> &'static str
 }
 
 fn fan_display_name(fan: &FanChannel) -> String {
-    if let Some(ref name) = fan.friendly_name {
-        if !name.is_empty() {
-            return name.clone();
-        }
+    if let Some(ref name) = fan.friendly_name
+        && !name.is_empty()
+    {
+        return name.clone();
     }
-    if let Some(ref label) = fan.label {
-        if !label.is_empty() {
-            return label.clone();
-        }
+    if let Some(ref label) = fan.label
+        && !label.is_empty()
+    {
+        return label.clone();
     }
     fan.id.clone()
 }
@@ -117,14 +131,14 @@ fn format_temp(millideg: i64) -> String {
 
 fn format_rpm(rpm: i64) -> String {
     if rpm > 0 {
-        format!("{} RPM", rpm)
+        format!("{rpm} RPM")
     } else {
         "0 RPM".into()
     }
 }
 
 fn format_output(pct: f64) -> String {
-    format!("{:.1}%", pct)
+    format!("{pct:.1}%")
 }
 
 impl OverviewStructureSnapshot {
@@ -148,7 +162,7 @@ impl OverviewStructureSnapshot {
                 let bucket = ordering_bucket(&rt_status, high_temp).to_string();
                 let control_mode = match &rt_status {
                     FanRuntimeStatus::Managed { control_mode, .. } => {
-                        Some(format!("{:?}", control_mode).to_lowercase())
+                        Some(format!("{control_mode:?}").to_lowercase())
                     }
                     _ => None,
                 };
