@@ -58,6 +58,11 @@
   </screenshots>
 
   <releases>
+    <release version="1.0.3" date="2026-04-15" type="stable">
+      <description>
+        <p>Fix polkit authorization that prevented GUI unlock.</p>
+      </description>
+    </release>
     <release version="1.0.2" date="2026-04-14" type="stable">
       <description>
         <p>Packaging follow-up release that fixes installed application icon naming and refreshes bundled product diagrams.</p>

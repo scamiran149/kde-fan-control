@@ -1,0 +1,7 @@
+rm_conffile /etc/pam.d/polkit-1 122-2~
+rm_conffile /etc/polkit-1/localauthority.conf.d/50-localauthority.conf 121+compat0.1-1~
+rm_conffile /etc/polkit-1/localauthority.conf.d/51-debian-sudo.conf 121+compat0.1-1~
+rm_conffile /etc/polkit-1/localauthority.conf.d/51-ubuntu-admin.conf 121+compat0.1-1~
+rm_conffile /etc/polkit-1/rules.d/40-debian-sudo.rules 121~ polkitd-javascript
+rm_conffile /etc/polkit-1/rules.d/40-ubuntu-admin.rules 121~ polkitd-javascript
+rm_conffile /etc/polkit-1/rules.d/50-default.rules 121~ polkitd-javascript

@@ -1,5 +1,12 @@
-kde-fan-control (1.0.1-1) questing; urgency=medium
+kde-fan-control (1.0.3-1) questing; urgency=medium
 
-  * Package post-release fixes and improve sensor selection UI.
+  * Fix polkit authorization: send uid as INT32 (not UINT32) and
+    start-time as raw clock ticks (not microseconds).
+
+ -- Samiran Amiran <sherwin@amiran.us>  Wed, 15 Apr 2026 00:00:00 +0000
+
+kde-fan-control (1.0.2-1) questing; urgency=medium
+
+  * Release packaged icon naming and diagram refresh fixes.
 
  -- Samiran Amiran <sherwin@amiran.us>  Tue, 14 Apr 2026 00:00:00 +0000
