@@ -58,6 +58,11 @@
   </screenshots>
 
   <releases>
+    <release version="1.0.4" date="2026-04-16" type="stable">
+      <description>
+        <p>Fix critical bug where applying any draft change caused all previously-managed fans to lose their PID control settings and revert to maximum speed.</p>
+      </description>
+    </release>
     <release version="1.0.3" date="2026-04-15" type="stable">
       <description>
         <p>Fix polkit authorization that prevented GUI unlock.</p>

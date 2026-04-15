@@ -1,3 +1,14 @@
+kde-fan-control (1.0.4-1) questing; urgency=medium
+
+  * Fix critical bug: applying any draft setting caused all previously-managed
+    fans to lose their PID control and revert to maximum speed (PWM 255).
+    The apply-draft transaction now correctly preserves ownership for fans
+    carried over from the previous applied config.
+  * Add #[serde(default)] to DraftFanEntry.managed for forward-compatible
+    TOML deserialization.
+
+ -- Samiran Amiran <sherwin@amiran.us>  Wed, 16 Apr 2026 00:00:00 +0000
+
 kde-fan-control (1.0.3-1) questing; urgency=medium
 
   * Fix polkit authorization: send uid as INT32 (not UINT32) and
