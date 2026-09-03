@@ -635,7 +635,11 @@ Kirigami.Page {
 
                     Controls.Label {
                         Kirigami.FormData.label: i18n("High-temp alert")
-                        text: fanDetailPage.fanHighTempAlert ? i18n("Active") : i18n("None")
+                        text: fanDetailPage.fanHighTempAlert
+                            ? i18n("Active (setpoint: %1 °C)", (draftModel.alarmTempMillidegrees / 1000.0).toFixed(1))
+                            : (draftModel.alarmTempMillidegrees > 0
+                                ? i18n("None (setpoint: %1 °C)", (draftModel.alarmTempMillidegrees / 1000.0).toFixed(1))
+                                : i18n("None"))
                         color: fanDetailPage.fanHighTempAlert ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.textColor
                     }
                 }
@@ -688,6 +692,18 @@ Kirigami.Page {
                         textFromValue: function(v) { return (v / 10.0).toFixed(1) + " °C" }
                         valueFromText: function(text) { return Math.round(parseFloat(text) * 10) }
                         onValueModified: draftModel.setDeadbandMillidegrees(value * 100)
+                        enabled: draftModel.enrolled
+                    }
+
+                    Controls.SpinBox {
+                        Kirigami.FormData.label: i18n("Alarm setpoint (°C)")
+                        from: 0
+                        to: 1500  // 0.0 to 150.0 °C as tenths
+                        stepSize: 5   // 0.5 °C
+                        value: Math.round(draftModel.alarmTempMillidegrees / 100)
+                        textFromValue: function(v) { return (v / 10.0).toFixed(1) + " °C" }
+                        valueFromText: function(text) { return Math.round(parseFloat(text) * 10) }
+                        onValueModified: draftModel.setAlarmTempCelsiusViaDBus(value / 10.0)
                         enabled: draftModel.enrolled
                     }
 

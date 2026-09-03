@@ -18,3 +18,5 @@ debian/debhelper/
 policykit-1-126/
 policykit-1_*.tar.gz
 .tmp-diagram-previews/
+logfile
+debian/.debhelper/kde-fan-control/dbgsym-root/usr/lib/debug/.build-id/

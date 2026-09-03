@@ -29,6 +29,7 @@ class FanStateInfo : public QObject
     Q_PROPERTY(bool hasTach READ hasTach WRITE setHasTach NOTIFY hasTachChanged)
     Q_PROPERTY(QString supportReason READ supportReason WRITE setSupportReason NOTIFY supportReasonChanged)
     Q_PROPERTY(bool highTempAlert READ highTempAlert WRITE setHighTempAlert NOTIFY highTempAlertChanged)
+    Q_PROPERTY(qint64 alarmTempMillidegrees READ alarmTempMillidegrees WRITE setAlarmTempMillidegrees NOTIFY alarmTempMillidegreesChanged)
 
 public:
     explicit FanStateInfo(QObject *parent = nullptr) : QObject(parent) {}
@@ -46,6 +47,7 @@ public:
     bool hasTach() const { return m_hasTach; }
     QString supportReason() const { return m_supportReason; }
     bool highTempAlert() const { return m_highTempAlert; }
+    qint64 alarmTempMillidegrees() const { return m_alarmTempMillidegrees; }
 
     void setFanId(const QString &v) { if (m_fanId != v) { m_fanId = v; Q_EMIT fanIdChanged(); } }
     void setDisplayName(const QString &v) { if (m_displayName != v) { m_displayName = v; Q_EMIT displayNameChanged(); } }
@@ -60,6 +62,7 @@ public:
     void setHasTach(bool v) { if (m_hasTach != v) { m_hasTach = v; Q_EMIT hasTachChanged(); } }
     void setSupportReason(const QString &v) { if (m_supportReason != v) { m_supportReason = v; Q_EMIT supportReasonChanged(); } }
     void setHighTempAlert(bool v) { if (m_highTempAlert != v) { m_highTempAlert = v; Q_EMIT highTempAlertChanged(); } }
+    void setAlarmTempMillidegrees(qint64 v) { if (m_alarmTempMillidegrees != v) { m_alarmTempMillidegrees = v; Q_EMIT alarmTempMillidegreesChanged(); } }
 
 signals:
     void fanIdChanged();
@@ -75,6 +78,7 @@ signals:
     void hasTachChanged();
     void supportReasonChanged();
     void highTempAlertChanged();
+    void alarmTempMillidegreesChanged();
 
 private:
     QString m_fanId;
@@ -90,6 +94,7 @@ private:
     bool m_hasTach = false;
     QString m_supportReason;
     bool m_highTempAlert = false;
+    qint64 m_alarmTempMillidegrees = 0;
 };
 
 class SensorInfo : public QObject

@@ -403,8 +403,6 @@ Root object returned by `GetDraftConfig()`, `SetDraftFanEnrollment()`, `AcceptAu
 |---|---|---|
 | `output_min_percent` | float | Minimum logical output as a percentage [0.0, 100.0]. Default: 0.0. |
 | `output_max_percent` | float | Maximum logical output as a percentage [0.0, 100.0]. Default: 100.0. |
-| `pwm_min` | integer | Minimum raw PWM value [0, 255]. Default: 0. |
-| `pwm_max` | integer | Maximum raw PWM value [0, 255]. Default: 255. |
 | `startup_kick_percent` | float | Output percentage applied during startup kick phase. Default: 35.0. |
 | `startup_kick_ms` | integer | Duration of the startup kick in milliseconds. Default: 1500. |
 
@@ -496,7 +494,8 @@ When `SetDraftFanEnrollment` creates a new draft entry, defaults are:
 | `pid_gains` | `{"kp": 1.0, "ki": 1.0, "kd": 0.5}` |
 | `cadence` | `{"sample_interval_ms": 250, "control_interval_ms": 250, "write_interval_ms": 250}` |
 | `deadband_millidegrees` | 1000 |
-| `actuator_policy` | `{"output_min_percent": 0.0, "output_max_percent": 100.0, "pwm_min": 0, "pwm_max": 255, "startup_kick_percent": 35.0, "startup_kick_ms": 1500}` |
+| `alarm_temp_millidegrees` | `target_temp_millidegrees + 5000` (defaults to 70000) |
+| `actuator_policy` | `{"output_min_percent": 0.0, "output_max_percent": 100.0, "startup_kick_percent": 35.0, "startup_kick_ms": 1500}` |
 | `pid_limits` | `{"integral_min": -500.0, "integral_max": 500.0, "derivative_min": -5.0, "derivative_max": 5.0}` |
 
 ### 5.7 LifecycleEvent
@@ -559,6 +558,7 @@ Per-fan live control data, returned by `GetControlStatus()` and embedded in `Run
   "logical_output_percent": 42.5,
   "mapped_pwm": 108,
   "auto_tuning": false,
+  "alarm_temp_millidegrees": 70000,
   "alert_high_temp": false,
   "last_error_millidegrees": -10000
 }
@@ -573,7 +573,8 @@ Per-fan live control data, returned by `GetControlStatus()` and embedded in `Run
 | `logical_output_percent` | float | PID controller output as a percentage [0.0, 100.0] |
 | `mapped_pwm` | integer | Raw PWM value written to the hwmon node [0, 255], after actuator mapping |
 | `auto_tuning` | boolean | `true` if auto-tune is currently running for this fan |
-| `alert_high_temp` | boolean | `true` if the aggregated temperature exceeds a safety threshold and the controller has been overridden to 100% |
+| `alarm_temp_millidegrees` | integer | High-temperature alarm setpoint in millidegrees Celsius. Alarm fires when aggregated temperature >= this value; clears at setpoint − 500 m°C (0.5 °C hysteresis). Defaults to target_temp + 5 °C when absent. |
+| `alert_high_temp` | boolean | `true` if the aggregated temperature exceeds the per-fan alarm setpoint (see alarm_temp_millidegrees) |
 | `last_error_millidegrees` | integer | Most recent PID error term (target − aggregated) in millidegrees Celsius. Negative means below target. |
 
 ### 5.10 AutoTuneResult
@@ -625,11 +626,10 @@ Partial update object accepted by `SetDraftFanControlProfile`. All fields are op
   "pid_gains": { "kp": 1.0, "ki": 1.0, "kd": 0.5 },
   "cadence": { "sample_interval_ms": 250, "control_interval_ms": 250, "write_interval_ms": 250 },
   "deadband_millidegrees": 1000,
+  "alarm_temp_millidegrees": 70000,
   "actuator_policy": {
     "output_min_percent": 0.0,
     "output_max_percent": 100.0,
-    "pwm_min": 0,
-    "pwm_max": 255,
     "startup_kick_percent": 35.0,
     "startup_kick_ms": 1500
   },
@@ -643,6 +643,17 @@ Partial update object accepted by `SetDraftFanControlProfile`. All fields are op
 ```
 
 When a nested object (e.g. `pid_gains`) is provided, it replaces all fields within that sub-object. To update only `kp` while preserving `ki` and `kd`, the caller must read the current draft first, merge locally, then write the complete `pid_gains` object.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `target_temp_millidegrees` | integer | Optional | Target temperature in millidegrees Celsius |
+| `aggregation` | string | Optional | Aggregation method: `"average"`, `"maximum"`, `"minimum"` |
+| `pid_gains` | object | Optional | PID gains: `{"kp": float, "ki": float, "kd": float}` |
+| `cadence` | object | Optional | Timing parameters |
+| `deadband_millidegrees` | integer | Optional | Deadband in millidegrees Celsius |
+| `alarm_temp_millidegrees` | integer or null | Optional | High-temperature alarm setpoint in millidegrees Celsius (1–150000). Defaults to target_temp + 5000 when absent. |
+| `actuator_policy` | object | Optional | Actuator mapping and startup kick |
+| `pid_limits` | object | Optional | Integral and derivative clamps |
 
 ### 5.12 OverviewStructureSnapshot
 
@@ -697,6 +708,7 @@ Root object returned by `GetOverviewTelemetry()`.
 | `output_text` | string | Pre-formatted output display string: `"42.5%"` or `"No control"` |
 | `output_fill_ratio` | float | Normalized fill ratio for UI bar: `output_percent / 100.0`, clamped to [0.0, 1.0] |
 | `high_temp_alert` | boolean | `true` if aggregated temperature exceeds the safety threshold |
+| `alarm_temp_millidegrees` | integer | Per-fan alarm setpoint in millidegrees Celsius |
 | `show_rpm` | boolean | `true` when the RPM field should be displayed (managed/degraded/fallback fans with tach) |
 | `show_output` | boolean | `true` when the output bar should be displayed (managed/degraded/fallback fans) |
 | `visual_state` | string | State for UI badge coloring: `"managed"`, `"managed_hot"`, `"degraded"`, `"fallback"`, `"unmanaged"` |

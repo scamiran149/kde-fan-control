@@ -131,6 +131,7 @@ mod tests {
             deadband_millidegrees: 1_000,
             actuator_policy: ActuatorPolicy::default(),
             pid_limits: PidLimits::default(),
+            alarm_temp_millidegrees: 70_000,
         }
     }
 

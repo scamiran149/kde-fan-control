@@ -21,8 +21,8 @@ use crate::control::{ActuatorPolicy, AggregationFn, ControlCadence, PidGains, Pi
 use crate::inventory::ControlMode;
 
 pub use crate::validation::{
-    apply_draft, find_fan_by_id, temp_source_exists, validate_draft, ValidationError,
-    ValidationResult,
+    ValidationError, ValidationResult, apply_draft, find_fan_by_id, temp_source_exists,
+    validate_draft,
 };
 
 /// Current schema version for the daemon-owned configuration file.
@@ -162,6 +162,11 @@ pub struct DraftFanEntry {
 
     #[serde(default)]
     pub pid_limits: Option<PidLimits>,
+
+    /// High-temperature alarm setpoint in millidegrees Celsius.
+    /// When unset the resolved value falls back to target + 5°C.
+    #[serde(default)]
+    pub alarm_temp_millidegrees: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +192,10 @@ fn default_applied_target_temp_millidegrees() -> i64 {
 
 fn default_applied_deadband_millidegrees() -> i64 {
     1_000
+}
+
+fn default_applied_alarm_temp_millidegrees() -> i64 {
+    default_applied_target_temp_millidegrees() + 5_000
 }
 
 /// A fan that is actively managed by the daemon under the applied config.
@@ -234,6 +243,13 @@ pub struct AppliedFanEntry {
     /// Defaults to PidLimits::default() when absent from TOML.
     #[serde(default)]
     pub pid_limits: PidLimits,
+
+    /// High-temperature alarm setpoint in millidegrees Celsius.
+    /// Alarm fires when aggregated temperature reaches this value;
+    /// clears at setpoint − 500 m°C (0.5 °C hysteresis).
+    /// Defaults to target + 5 °C when absent from TOML.
+    #[serde(default = "default_applied_alarm_temp_millidegrees")]
+    pub alarm_temp_millidegrees: i64,
 }
 
 impl DraftFanEntry {
@@ -263,6 +279,11 @@ impl DraftFanEntry {
 
     pub fn resolved_pid_limits(&self) -> PidLimits {
         self.pid_limits.unwrap_or_default()
+    }
+
+    pub fn resolved_alarm_temp_millidegrees(&self) -> i64 {
+        self.alarm_temp_millidegrees
+            .unwrap_or_else(|| self.resolved_target_temp_millidegrees().unwrap_or(65_000) + 5_000)
     }
 }
 
@@ -459,6 +480,7 @@ mod tests {
             deadband_millidegrees: None,
             actuator_policy: None,
             pid_limits: None,
+            alarm_temp_millidegrees: None,
         }
     }
 
@@ -514,9 +536,11 @@ mod tests {
         let serialized = toml::to_string_pretty(&config).unwrap();
         let deserialized: AppConfig = toml::from_str(&serialized).unwrap();
 
-        assert!(deserialized
-            .draft_fan("hwmon-test-0000000000000001-fan1")
-            .is_some());
+        assert!(
+            deserialized
+                .draft_fan("hwmon-test-0000000000000001-fan1")
+                .is_some()
+        );
         let entry = deserialized
             .draft_fan("hwmon-test-0000000000000001-fan1")
             .unwrap();
@@ -542,6 +566,7 @@ mod tests {
                         deadband_millidegrees: 1_000,
                         actuator_policy: ActuatorPolicy::default(),
                         pid_limits: PidLimits::default(),
+                        alarm_temp_millidegrees: 70_000,
                     },
                 );
                 m
@@ -602,9 +627,11 @@ mod tests {
 
         let result = validate_draft(&draft, &snapshot);
         assert!(result.all_passed());
-        assert!(result
-            .enrollable
-            .contains(&"hwmon-test-0000000000000001-fan1".to_string()));
+        assert!(
+            result
+                .enrollable
+                .contains(&"hwmon-test-0000000000000001-fan1".to_string())
+        );
         assert!(result.rejected.is_empty());
     }
 
@@ -722,9 +749,11 @@ mod tests {
             apply_draft(&draft, &snapshot, "2026-04-11T12:00:00Z".to_string(), None);
 
         // Only the valid fan should appear in applied.
-        assert!(applied
-            .fans
-            .contains_key("hwmon-test-0000000000000001-fan1"));
+        assert!(
+            applied
+                .fans
+                .contains_key("hwmon-test-0000000000000001-fan1")
+        );
         assert!(!applied.fans.contains_key("ghost-fan"));
         assert_eq!(result.rejected.len(), 1);
     }
@@ -790,8 +819,6 @@ mod tests {
                 actuator_policy: Some(ActuatorPolicy {
                     output_min_percent: 10.0,
                     output_max_percent: 95.0,
-                    pwm_min: 20,
-                    pwm_max: 240,
                     startup_kick_percent: 40.0,
                     startup_kick_ms: 1_800,
                 }),
@@ -827,8 +854,8 @@ mod tests {
             }
         );
         assert_eq!(entry.deadband_millidegrees, 2_500);
-        assert_eq!(entry.actuator_policy.pwm_min, 20);
-        assert_eq!(entry.actuator_policy.pwm_max, 240);
+        assert_eq!(entry.actuator_policy.output_min_percent, 10.0);
+        assert_eq!(entry.actuator_policy.output_max_percent, 95.0);
         assert_eq!(entry.actuator_policy.startup_kick_percent, 40.0);
         assert_eq!(entry.pid_limits.integral_min, -20.0);
         assert_eq!(entry.pid_limits.derivative_max, 8.0);
@@ -890,6 +917,8 @@ version = 999
         assert_eq!(entry.deadband_millidegrees, 1_000);
         assert_eq!(entry.actuator_policy, ActuatorPolicy::default());
         assert_eq!(entry.pid_limits, PidLimits::default());
+        // alarm_temp defaults to target + 5000 (= 70 °C)
+        assert_eq!(entry.alarm_temp_millidegrees, 70_000);
     }
 
     #[test]
@@ -1083,68 +1112,86 @@ version = 999
 
     #[test]
     fn pid_gains_is_finite_method() {
-        assert!(PidGains {
-            kp: 1.0,
-            ki: 0.5,
-            kd: 0.1
-        }
-        .is_finite());
-        assert!(PidGains {
-            kp: -1.0,
-            ki: 0.0,
-            kd: 100.0
-        }
-        .is_finite());
-        assert!(!PidGains {
-            kp: f64::NAN,
-            ki: 1.0,
-            kd: 1.0
-        }
-        .is_finite());
-        assert!(!PidGains {
-            kp: 1.0,
-            ki: f64::INFINITY,
-            kd: 1.0
-        }
-        .is_finite());
-        assert!(!PidGains {
-            kp: 1.0,
-            ki: 1.0,
-            kd: f64::NEG_INFINITY
-        }
-        .is_finite());
+        assert!(
+            PidGains {
+                kp: 1.0,
+                ki: 0.5,
+                kd: 0.1
+            }
+            .is_finite()
+        );
+        assert!(
+            PidGains {
+                kp: -1.0,
+                ki: 0.0,
+                kd: 100.0
+            }
+            .is_finite()
+        );
+        assert!(
+            !PidGains {
+                kp: f64::NAN,
+                ki: 1.0,
+                kd: 1.0
+            }
+            .is_finite()
+        );
+        assert!(
+            !PidGains {
+                kp: 1.0,
+                ki: f64::INFINITY,
+                kd: 1.0
+            }
+            .is_finite()
+        );
+        assert!(
+            !PidGains {
+                kp: 1.0,
+                ki: 1.0,
+                kd: f64::NEG_INFINITY
+            }
+            .is_finite()
+        );
     }
 
     #[test]
     fn pid_limits_is_finite_method() {
-        assert!(PidLimits {
-            integral_min: -500.0,
-            integral_max: 500.0,
-            derivative_min: -5.0,
-            derivative_max: 5.0,
-        }
-        .is_finite());
-        assert!(!PidLimits {
-            integral_min: f64::NAN,
-            integral_max: 500.0,
-            derivative_min: -5.0,
-            derivative_max: 5.0,
-        }
-        .is_finite());
-        assert!(!PidLimits {
-            integral_min: -500.0,
-            integral_max: f64::INFINITY,
-            derivative_min: -5.0,
-            derivative_max: 5.0,
-        }
-        .is_finite());
-        assert!(!PidLimits {
-            integral_min: -500.0,
-            integral_max: 500.0,
-            derivative_min: f64::NEG_INFINITY,
-            derivative_max: 5.0,
-        }
-        .is_finite());
+        assert!(
+            PidLimits {
+                integral_min: -500.0,
+                integral_max: 500.0,
+                derivative_min: -5.0,
+                derivative_max: 5.0,
+            }
+            .is_finite()
+        );
+        assert!(
+            !PidLimits {
+                integral_min: f64::NAN,
+                integral_max: 500.0,
+                derivative_min: -5.0,
+                derivative_max: 5.0,
+            }
+            .is_finite()
+        );
+        assert!(
+            !PidLimits {
+                integral_min: -500.0,
+                integral_max: f64::INFINITY,
+                derivative_min: -5.0,
+                derivative_max: 5.0,
+            }
+            .is_finite()
+        );
+        assert!(
+            !PidLimits {
+                integral_min: -500.0,
+                integral_max: 500.0,
+                derivative_min: f64::NEG_INFINITY,
+                derivative_max: 5.0,
+            }
+            .is_finite()
+        );
     }
 
     #[test]
@@ -1169,5 +1216,71 @@ version = 999
             &result.rejected[0].1,
             ValidationError::InvalidPidLimits { .. }
         ));
+    }
+
+    #[test]
+    fn resolved_alarm_temp_defaults_to_target_plus_5c() {
+        let entry = DraftFanEntry {
+            target_temp_millidegrees: Some(55_000),
+            ..managed_draft_entry()
+        };
+        assert_eq!(entry.resolved_alarm_temp_millidegrees(), 60_000);
+    }
+
+    #[test]
+    fn resolved_alarm_temp_uses_explicit_value() {
+        let entry = DraftFanEntry {
+            target_temp_millidegrees: Some(55_000),
+            alarm_temp_millidegrees: Some(80_000),
+            ..managed_draft_entry()
+        };
+        assert_eq!(entry.resolved_alarm_temp_millidegrees(), 80_000);
+    }
+
+    #[test]
+    fn alarm_temp_propagates_through_apply_draft() {
+        let snapshot = test_snapshot();
+        let mut draft = DraftConfig::default();
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            DraftFanEntry {
+                target_temp_millidegrees: Some(50_000),
+                alarm_temp_millidegrees: Some(75_000),
+                ..managed_draft_entry()
+            },
+        );
+
+        let (applied, result) =
+            apply_draft(&draft, &snapshot, "2026-04-11T12:00:00Z".to_string(), None);
+        assert!(result.all_passed());
+        let entry = applied
+            .fans
+            .get("hwmon-test-0000000000000001-fan1")
+            .expect("fan should be applied");
+        assert_eq!(entry.alarm_temp_millidegrees, 75_000);
+    }
+
+    #[test]
+    fn alarm_temp_defaults_when_omitted_in_apply_draft() {
+        let snapshot = test_snapshot();
+        let mut draft = DraftConfig::default();
+        draft.fans.insert(
+            "hwmon-test-0000000000000001-fan1".to_string(),
+            DraftFanEntry {
+                target_temp_millidegrees: Some(50_000),
+                alarm_temp_millidegrees: None,
+                ..managed_draft_entry()
+            },
+        );
+
+        let (applied, result) =
+            apply_draft(&draft, &snapshot, "2026-04-11T12:00:00Z".to_string(), None);
+        assert!(result.all_passed());
+        let entry = applied
+            .fans
+            .get("hwmon-test-0000000000000001-fan1")
+            .expect("fan should be applied");
+        // Default alarm = target + 5000 = 55000
+        assert_eq!(entry.alarm_temp_millidegrees, 55_000);
     }
 }

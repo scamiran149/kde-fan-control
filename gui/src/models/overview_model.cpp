@@ -175,6 +175,7 @@ void OverviewModel::applyTelemetryToRow(OverviewFanRow *row, const QJsonObject &
     row->setOutputText(obj.value(QStringLiteral("output_text")).toString());
     row->setOutputFillRatio(obj.value(QStringLiteral("output_fill_ratio")).toDouble(0.0));
     row->setHighTempAlert(obj.value(QStringLiteral("high_temp_alert")).toBool(false));
+    row->setAlarmTempMillidegrees(obj.value(QStringLiteral("alarm_temp_millidegrees")).toVariant().toLongLong());
     row->setShowRpm(obj.value(QStringLiteral("show_rpm")).toBool(false));
     row->setShowOutput(obj.value(QStringLiteral("show_output")).toBool(false));
     row->setVisualState(obj.value(QStringLiteral("visual_state")).toString());

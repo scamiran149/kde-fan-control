@@ -59,23 +59,27 @@ gui_src="$gui_build_root/kde-fan-control-gui"
 
 polkit_src="$repo_root/packaging/polkit/org.kde.fancontrol.policy"
 desktop_src="$repo_root/packaging/org.kde.fancontrol.desktop"
+metainfo_src="$repo_root/packaging/org.kde.fancontrol.metainfo.xml"
 icon_svg_src="$repo_root/packaging/icons/hicolor/scalable/apps/org.kde.fancontrol.svg"
 icon_48_src="$repo_root/packaging/icons/hicolor/48x48/apps/org.kde.fancontrol.png"
 icon_128_src="$repo_root/packaging/icons/hicolor/128x128/apps/org.kde.fancontrol.png"
 dbus_policy_src="$repo_root/packaging/dbus/org.kde.FanControl.conf"
 dbus_service_src="$repo_root/packaging/dbus/org.kde.FanControl.service"
 systemd_src="$repo_root/packaging/systemd/kde-fan-control-daemon.service"
+notifyrc_src="$repo_root/gui/data/kdefancontrol.notifyrc"
 qml_qmldir_src="$gui_build_root/org/kde/fancontrol/qmldir"
 qml_qmltypes_src="$gui_build_root/org/kde/fancontrol/gui_app.qmltypes"
 
 polkit_dest_dir="/usr/local/share/polkit-1/actions"
 desktop_dest_dir="/usr/local/share/applications"
+metainfo_dest_dir="/usr/local/share/metainfo"
 icon_theme_dir="/usr/local/share/icons/hicolor"
 icon_svg_dest_dir="$icon_theme_dir/scalable/apps"
 icon_48_dest_dir="$icon_theme_dir/48x48/apps"
 icon_128_dest_dir="$icon_theme_dir/128x128/apps"
-dbus_policy_dest_dir="/usr/local/share/dbus-1/system.d"
-dbus_service_dest_dir="/usr/local/share/dbus-1/system-services"
+dbus_policy_dest_dir="/usr/share/dbus-1/system.d"
+dbus_service_dest_dir="/usr/share/dbus-1/system-services"
+notifyrc_dest_dir="/usr/local/share/knotifications6"
 systemd_dest_dir="/etc/systemd/system"
 bin_dest_dir="/usr/local/bin"
 libexec_dest_dir="/usr/local/libexec"
@@ -83,11 +87,15 @@ qml_dest_dir="/usr/lib/x86_64-linux-gnu/qt6/qml/org/kde/fancontrol"
 
 polkit_dest="$polkit_dest_dir/org.kde.fancontrol.policy"
 desktop_dest="$desktop_dest_dir/org.kde.fancontrol.desktop"
+metainfo_dest="$metainfo_dest_dir/org.kde.fancontrol.metainfo.xml"
 icon_svg_dest="$icon_svg_dest_dir/org.kde.fancontrol.svg"
 icon_48_dest="$icon_48_dest_dir/org.kde.fancontrol.png"
 icon_128_dest="$icon_128_dest_dir/org.kde.fancontrol.png"
 dbus_policy_dest="$dbus_policy_dest_dir/org.kde.FanControl.conf"
 dbus_service_dest="$dbus_service_dest_dir/org.kde.FanControl.service"
+notifyrc_dest="$notifyrc_dest_dir/kdefancontrol.notifyrc"
+legacy_dbus_policy_dest="/usr/local/share/dbus-1/system.d/org.kde.FanControl.conf"
+legacy_dbus_service_dest="/usr/local/share/dbus-1/system-services/org.kde.FanControl.service"
 systemd_dest="$systemd_dest_dir/kde-fan-control-daemon.service"
 daemon_dest="$libexec_dest_dir/kde-fan-control-daemon"
 fallback_dest="$libexec_dest_dir/kde-fan-control-fallback"
@@ -120,6 +128,25 @@ remove_if_exists() {
   fi
 }
 
+refresh_desktop_cache() {
+  update-desktop-database "$desktop_dest_dir" >/dev/null 2>&1 || true
+  gtk-update-icon-cache -q -t "$icon_theme_dir" >/dev/null 2>&1 || true
+  command -v kbuildsycoca6 >/dev/null 2>&1 || return 0
+
+  local invoking_user=""
+  if [[ -n "${PKEXEC_UID:-}" && "${PKEXEC_UID:-}" != "0" ]]; then
+    invoking_user="$(getent passwd "$PKEXEC_UID" | cut -d: -f1)"
+  elif [[ -n "${SUDO_USER:-}" && "${SUDO_USER:-}" != "root" ]]; then
+    invoking_user="$SUDO_USER"
+  fi
+
+  if [[ -n "$invoking_user" ]]; then
+    runuser -u "$invoking_user" -- kbuildsycoca6 --noincremental >/dev/null 2>&1 || true
+  else
+    kbuildsycoca6 --noincremental >/dev/null 2>&1 || true
+  fi
+}
+
 install_assets() {
   for required in \
     "$daemon_src" \
@@ -127,12 +154,14 @@ install_assets() {
     "$gui_src" \
     "$polkit_src" \
     "$desktop_src" \
+    "$metainfo_src" \
     "$icon_svg_src" \
     "$icon_48_src" \
     "$icon_128_src" \
     "$dbus_policy_src" \
     "$dbus_service_src" \
     "$systemd_src" \
+    "$notifyrc_src" \
     "$qml_qmldir_src" \
     "$qml_qmltypes_src"; do
     if [[ ! -e "$required" ]]; then
@@ -143,11 +172,13 @@ install_assets() {
 
   install_file "$polkit_src" "$polkit_dest"
   install_file "$desktop_src" "$desktop_dest"
+  install_file "$metainfo_src" "$metainfo_dest"
   install_file "$icon_svg_src" "$icon_svg_dest"
   install_file "$icon_48_src" "$icon_48_dest"
   install_file "$icon_128_src" "$icon_128_dest"
   install_file "$dbus_policy_src" "$dbus_policy_dest"
   install_file "$dbus_service_src" "$dbus_service_dest"
+  install_file "$notifyrc_src" "$notifyrc_dest"
   install_file "$qml_qmldir_src" "$qml_dest_dir/qmldir"
   install_file "$qml_qmltypes_src" "$qml_dest_dir/gui_app.qmltypes"
   install_systemd_unit
@@ -156,9 +187,7 @@ install_assets() {
   install_executable "$gui_src" "$gui_dest"
 
   systemctl daemon-reload
-  update-desktop-database "$desktop_dest_dir" >/dev/null 2>&1 || true
-  gtk-update-icon-cache -q -t "$icon_theme_dir" >/dev/null 2>&1 || true
-  kbuildsycoca6 >/dev/null 2>&1 || true
+  refresh_desktop_cache
 
   printf 'Installed developer integration files using %s artifacts.\n' "$profile"
   printf 'Start the daemon with: systemctl start kde-fan-control-daemon\n'
@@ -178,8 +207,12 @@ uninstall_assets() {
   remove_if_exists "$systemd_dest"
   remove_if_exists "$dbus_service_dest"
   remove_if_exists "$dbus_policy_dest"
+  remove_if_exists "$legacy_dbus_service_dest"
+  remove_if_exists "$legacy_dbus_policy_dest"
   remove_if_exists "$polkit_dest"
   remove_if_exists "$desktop_dest"
+  remove_if_exists "$metainfo_dest"
+  remove_if_exists "$notifyrc_dest"
   remove_if_exists "$icon_svg_dest"
   remove_if_exists "$icon_48_dest"
   remove_if_exists "$icon_128_dest"
@@ -189,9 +222,7 @@ uninstall_assets() {
   rm -rf "$qml_dest_dir"
 
   systemctl daemon-reload
-  update-desktop-database "$desktop_dest_dir" >/dev/null 2>&1 || true
-  gtk-update-icon-cache -q -t "$icon_theme_dir" >/dev/null 2>&1 || true
-  kbuildsycoca6 >/dev/null 2>&1 || true
+  refresh_desktop_cache
 
   if [[ "$was_active" == "true" ]]; then
     printf 'Stopped running kde-fan-control-daemon instance before uninstall.\n'

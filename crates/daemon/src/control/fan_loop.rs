@@ -81,7 +81,11 @@ impl ControlSupervisor {
                             latest_aggregated_temp = Some(aggregated_temp);
                             Self::write_fan_local(&local, |status| {
                                 status.aggregated_temp_millidegrees = Some(aggregated_temp);
-                                status.alert_high_temp = aggregated_temp >= status.target_temp_millidegrees + 5_000;
+                                status.alert_high_temp = if status.alert_high_temp {
+                                    aggregated_temp >= status.alarm_temp_millidegrees - 500
+                                } else {
+                                    aggregated_temp >= status.alarm_temp_millidegrees
+                                };
                             });
                             self.record_auto_tune_sample(&fan_id, aggregated_temp).await;
                         }
@@ -123,7 +127,11 @@ impl ControlSupervisor {
                             status.aggregated_temp_millidegrees = Some(aggregated_temp);
                             status.logical_output_percent = Some(output.logical_output_percent);
                             status.last_error_millidegrees = Some(output.error_millidegrees.round() as i64);
-                            status.alert_high_temp = aggregated_temp >= status.target_temp_millidegrees + 5_000;
+                            status.alert_high_temp = if status.alert_high_temp {
+                                aggregated_temp >= status.alarm_temp_millidegrees - 500
+                            } else {
+                                aggregated_temp >= status.alarm_temp_millidegrees
+                            };
                         });
                     }
                 }

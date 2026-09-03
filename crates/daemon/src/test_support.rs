@@ -41,12 +41,11 @@ pub fn applied_entry(temp_sources: Vec<String>) -> AppliedFanEntry {
         actuator_policy: ActuatorPolicy {
             output_min_percent: 0.0,
             output_max_percent: 100.0,
-            pwm_min: 0,
-            pwm_max: 255,
             startup_kick_percent: 35.0,
             startup_kick_ms: 1,
         },
         pid_limits: PidLimits::default(),
+        alarm_temp_millidegrees: 55_000,
     }
 }
 

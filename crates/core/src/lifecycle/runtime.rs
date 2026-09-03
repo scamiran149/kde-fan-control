@@ -29,6 +29,7 @@ pub struct ControlRuntimeSnapshot {
     pub mapped_pwm: Option<u16>,
     pub auto_tuning: bool,
     pub alert_high_temp: bool,
+    pub alarm_temp_millidegrees: i64,
     pub last_error_millidegrees: Option<i64>,
 }
 
@@ -43,6 +44,7 @@ impl ControlRuntimeSnapshot {
             mapped_pwm: None,
             auto_tuning: false,
             alert_high_temp: false,
+            alarm_temp_millidegrees: entry.alarm_temp_millidegrees,
             last_error_millidegrees: None,
         }
     }
@@ -212,6 +214,7 @@ mod tests {
             deadband_millidegrees: 1_000,
             actuator_policy: ActuatorPolicy::default(),
             pid_limits: PidLimits::default(),
+            alarm_temp_millidegrees: 70_000,
         }
     }
 
@@ -337,6 +340,7 @@ mod tests {
                 mapped_pwm: Some(159),
                 auto_tuning: true,
                 alert_high_temp: true,
+                alarm_temp_millidegrees: 75_000,
                 last_error_millidegrees: Some(2_500),
             },
         };

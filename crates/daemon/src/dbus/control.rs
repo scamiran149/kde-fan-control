@@ -129,6 +129,16 @@ impl ControlIface {
             }
             draft_entry.pid_limits = value;
         }
+        if let Some(value) = patch.alarm_temp_millidegrees {
+            if let Some(alarm_temp) = value
+                && (alarm_temp <= 0 || alarm_temp > 150_000)
+            {
+                return Err(fdo::Error::InvalidArgs(format!(
+                    "alarm_temp_millidegrees {alarm_temp} is out of bounds (must be 1..=150000)"
+                )));
+            }
+            draft_entry.alarm_temp_millidegrees = value;
+        }
         let response = serde_json::to_string(&*draft_entry)
             .map_err(|e| fdo::Error::Failed(format!("draft serialization error: {e}")))?;
 
@@ -398,8 +408,6 @@ mod tests {
             "actuator_policy": {
                 "output_min_percent": 10.0,
                 "output_max_percent": 95.0,
-                "pwm_min": 15,
-                "pwm_max": 240,
                 "startup_kick_percent": 45.0,
                 "startup_kick_ms": 1200
             },

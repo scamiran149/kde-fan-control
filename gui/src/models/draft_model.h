@@ -50,6 +50,7 @@ class DraftModel : public QObject
     Q_PROPERTY(int deadbandMillidegrees READ deadbandMillidegrees NOTIFY advancedControlsChanged)
     Q_PROPERTY(double outputMinPercent READ outputMinPercent NOTIFY advancedControlsChanged)
     Q_PROPERTY(double outputMaxPercent READ outputMaxPercent NOTIFY advancedControlsChanged)
+    Q_PROPERTY(double alarmTempCelsius READ alarmTempCelsius WRITE setAlarmTempCelsius NOTIFY alarmTempCelsiusChanged)
 
 public:
     explicit DraftModel(DaemonInterface *daemon, QObject *parent = nullptr);
@@ -99,6 +100,9 @@ public:
     double outputMinPercent() const { return m_outputMinPercent; }
     double outputMaxPercent() const { return m_outputMaxPercent; }
 
+    double alarmTempCelsius() const { return m_alarmTempMillidegrees / 1000.0; }
+    double alarmTempMillidegrees() const { return m_alarmTempMillidegrees; }
+
     // --- Q_INVOKABLE methods for DBus operations ---
 
     Q_INVOKABLE void loadFan(const QString &fanId);
@@ -119,6 +123,10 @@ public:
     Q_INVOKABLE void setAdvancedCadence(int sampleMs, int controlMs, int writeMs);
     Q_INVOKABLE void setDeadbandMillidegrees(int millideg);
     Q_INVOKABLE void setOutputRange(double minPercent, double maxPercent);
+    Q_INVOKABLE void setAlarmTempCelsiusViaDBus(double celsius);
+
+    // Alarm temperature setter for direct QML use (no DBus round-trip)
+    void setAlarmTempCelsius(double celsius);
 
 signals:
     void fanIdChanged();
@@ -134,6 +142,7 @@ signals:
     void validationStateChanged();
     void applyStateChanged();
     void advancedControlsChanged();
+    void alarmTempCelsiusChanged();
 
 private slots:
     void onDraftConfigResult(const QString &json);
@@ -184,6 +193,7 @@ private:
     int m_deadbandMillidegrees = 1000; // 1.0 °C default
     double m_outputMinPercent = 0.0;
     double m_outputMaxPercent = 100.0;
+    qint64 m_alarmTempMillidegrees = 0;
 };
 
 #endif // DRAFT_MODEL_H

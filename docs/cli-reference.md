@@ -330,7 +330,7 @@ $ kde-fan-control state --format json
 ### `control set`
 
 ```
-kde-fan-control control set FAN_ID --target-temp TEMP --aggregation MODE --kp KP --ki KI --kd KD --sample-ms MS --control-ms MS --write-ms MS [--deadband-mc MC]
+kde-fan-control control set FAN_ID --target-temp TEMP --aggregation MODE --kp KP --ki KI --kd KD --sample-ms MS --control-ms MS --write-ms MS [--deadband-mc MC] [--alarm-temp TEMP] [--min-output PERCENT] [--max-output PERCENT]
 ```
 
 Stages PID control profile changes for a managed fan. All values go into the **draft** — not live until `apply`.
@@ -347,6 +347,9 @@ Stages PID control profile changes for a managed fan. All values go into the **d
 | `--control-ms` | PID calculation interval (ms). Must be >= `--sample-ms`. |
 | `--write-ms` | Fan write interval (ms). Must be >= `--control-ms`. |
 | `--deadband-mc` | Deadband in millidegrees (optional) |
+| `--alarm-temp` | Alarm setpoint in Celsius (optional, defaults to target + 5 °C) |
+| `--min-output` | Minimum output percentage 0.0–100.0 (optional) |
+| `--max-output` | Maximum output percentage 0.0–100.0 (optional) |
 
 **Cadence constraint:** `sample-ms` <= `control-ms` <= `write-ms`, and each must be >= 250 ms.
 

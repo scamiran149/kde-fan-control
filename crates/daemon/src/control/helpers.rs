@@ -24,6 +24,7 @@ pub fn control_snapshot_from_applied(entry: &AppliedFanEntry) -> ControlRuntimeS
         mapped_pwm: None,
         auto_tuning: false,
         alert_high_temp: false,
+        alarm_temp_millidegrees: entry.alarm_temp_millidegrees,
         last_error_millidegrees: None,
     }
 }
@@ -45,6 +46,7 @@ pub fn draft_entry_from_applied(entry: &AppliedFanEntry) -> DraftFanEntry {
         deadband_millidegrees: Some(entry.deadband_millidegrees),
         actuator_policy: Some(entry.actuator_policy),
         pid_limits: Some(entry.pid_limits),
+        alarm_temp_millidegrees: Some(entry.alarm_temp_millidegrees),
     }
 }
 

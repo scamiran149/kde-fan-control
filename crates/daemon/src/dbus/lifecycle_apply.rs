@@ -212,7 +212,9 @@ impl LifecycleIface {
 mod tests {
     use std::collections::HashSet;
 
-    use kde_fan_control_core::config::{AppliedConfig, AppliedFanEntry, DraftConfig, DraftFanEntry, apply_draft};
+    use kde_fan_control_core::config::{
+        AppliedConfig, AppliedFanEntry, DraftConfig, DraftFanEntry, apply_draft,
+    };
     use kde_fan_control_core::control::{
         ActuatorPolicy, AggregationFn, ControlCadence, PidGains, PidLimits,
     };
@@ -230,7 +232,11 @@ mod tests {
             temp_sources: vec!["hwmon-test-temp1".to_string()],
             target_temp_millidegrees: 50_000,
             aggregation: AggregationFn::Average,
-            pid_gains: PidGains { kp: 1.0, ki: 0.0, kd: 0.0 },
+            pid_gains: PidGains {
+                kp: 1.0,
+                ki: 0.0,
+                kd: 0.0,
+            },
             cadence: ControlCadence {
                 sample_interval_ms: 500,
                 control_interval_ms: 1000,
@@ -240,12 +246,11 @@ mod tests {
             actuator_policy: ActuatorPolicy {
                 output_min_percent: 0.0,
                 output_max_percent: 100.0,
-                pwm_min: 0,
-                pwm_max: 255,
                 startup_kick_percent: 35.0,
                 startup_kick_ms: 1000,
             },
             pid_limits: PidLimits::default(),
+            alarm_temp_millidegrees: 55_000,
         }
     }
 

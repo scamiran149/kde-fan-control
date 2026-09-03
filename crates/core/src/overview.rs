@@ -56,6 +56,7 @@ pub struct OverviewTelemetryRow {
     pub output_text: String,
     pub output_fill_ratio: f64,
     pub high_temp_alert: bool,
+    pub alarm_temp_millidegrees: i64,
     pub show_rpm: bool,
     pub show_output: bool,
     pub visual_state: String,
@@ -210,20 +211,22 @@ impl OverviewTelemetryBatch {
                 let status = runtime.fan_statuses.get(&fan.id);
                 let rt_status = status.cloned().unwrap_or(FanRuntimeStatus::Unmanaged);
 
-                let (temp_mdeg, output_pct, high_temp, visual_state) = match &rt_status {
+                let (temp_mdeg, output_pct, high_temp, alarm_temp, visual_state) = match &rt_status
+                {
                     FanRuntimeStatus::Managed { control, .. } => (
                         control.aggregated_temp_millidegrees.unwrap_or(0),
                         control.logical_output_percent.unwrap_or(0.0),
                         control.alert_high_temp,
+                        control.alarm_temp_millidegrees,
                         if control.alert_high_temp {
                             "managed_hot"
                         } else {
                             "managed"
                         },
                     ),
-                    FanRuntimeStatus::Degraded { .. } => (0, 100.0, false, "degraded"),
-                    FanRuntimeStatus::Fallback => (0, 100.0, false, "fallback"),
-                    FanRuntimeStatus::Unmanaged => (0, 0.0, false, "unmanaged"),
+                    FanRuntimeStatus::Degraded { .. } => (0, 100.0, false, 0, "degraded"),
+                    FanRuntimeStatus::Fallback => (0, 100.0, false, 0, "fallback"),
+                    FanRuntimeStatus::Unmanaged => (0, 0.0, false, 0, "unmanaged"),
                 };
 
                 let rpm = fan.current_rpm.unwrap_or(0) as i64;
@@ -263,6 +266,7 @@ impl OverviewTelemetryBatch {
                     },
                     output_fill_ratio: (output_pct / 100.0).clamp(0.0, 1.0),
                     high_temp_alert: high_temp,
+                    alarm_temp_millidegrees: alarm_temp,
                     show_rpm,
                     show_output,
                     visual_state: visual_state.to_string(),
@@ -336,6 +340,7 @@ mod tests {
                     mapped_pwm: None,
                     auto_tuning: false,
                     alert_high_temp: false,
+                    alarm_temp_millidegrees: 55000,
                     last_error_millidegrees: None,
                 },
             },
@@ -390,6 +395,7 @@ mod tests {
                     mapped_pwm: None,
                     auto_tuning: false,
                     alert_high_temp: false,
+                    alarm_temp_millidegrees: 55000,
                     last_error_millidegrees: None,
                 },
             },

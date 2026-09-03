@@ -157,10 +157,11 @@ Key design choices:
 
 ### PWM mapping
 
-Logical 0–100 % is mapped to the fan's `pwm_min..pwm_max` sysfs range:
+Logical 0–100 % is mapped linearly to the sysfs 0–255 range after clamping to
+`output_min_percent..output_max_percent`:
 
 ```
-  pwm_value = pwm_min + (output% / 100) × (pwm_max - pwm_min)
+  pwm_value = (clamped_output_percent / 100.0) × 255
 ```
 
 **Startup kick** — when output transitions from 0 % to >0 %, the controller

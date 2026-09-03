@@ -93,8 +93,6 @@ impl Default for ControlCadence {
 pub struct ActuatorPolicy {
     pub output_min_percent: f64,
     pub output_max_percent: f64,
-    pub pwm_min: u16,
-    pub pwm_max: u16,
     pub startup_kick_percent: f64,
     pub startup_kick_ms: u64,
 }
@@ -104,8 +102,6 @@ impl Default for ActuatorPolicy {
         Self {
             output_min_percent: 0.0,
             output_max_percent: 100.0,
-            pwm_min: 0,
-            pwm_max: 255,
             startup_kick_percent: 35.0,
             startup_kick_ms: 1_500,
         }
@@ -277,17 +273,13 @@ pub fn map_output_percent_to_pwm(percent: f64, policy: &ActuatorPolicy) -> u16 {
         .clamp(0.0, 100.0)
         .clamp(policy.output_min_percent, policy.output_max_percent);
 
-    if policy.pwm_min == policy.pwm_max
-        || (policy.output_max_percent - policy.output_min_percent).abs() < f64::EPSILON
-    {
-        return policy.pwm_min;
+    if (policy.output_max_percent - policy.output_min_percent).abs() < f64::EPSILON {
+        return 0;
     }
 
     let normalized = (bounded_percent - policy.output_min_percent)
         / (policy.output_max_percent - policy.output_min_percent);
-    let pwm = f64::from(policy.pwm_min)
-        + normalized * f64::from(policy.pwm_max.saturating_sub(policy.pwm_min));
-    pwm.round() as u16
+    (normalized * 255.0).round() as u16
 }
 
 pub fn startup_kick_required(last_percent: Option<f64>, next_percent: f64) -> bool {
@@ -382,15 +374,15 @@ mod tests {
         let policy = ActuatorPolicy {
             output_min_percent: 20.0,
             output_max_percent: 80.0,
-            pwm_min: 100,
-            pwm_max: 200,
             startup_kick_percent: 35.0,
             startup_kick_ms: 1_500,
         };
 
-        assert_eq!(map_output_percent_to_pwm(0.0, &policy), 100);
-        assert_eq!(map_output_percent_to_pwm(50.0, &policy), 150);
-        assert_eq!(map_output_percent_to_pwm(100.0, &policy), 200);
+        assert_eq!(map_output_percent_to_pwm(0.0, &policy), 0);
+        assert_eq!(map_output_percent_to_pwm(20.0, &policy), 0);
+        assert_eq!(map_output_percent_to_pwm(50.0, &policy), 128);
+        assert_eq!(map_output_percent_to_pwm(80.0, &policy), 255);
+        assert_eq!(map_output_percent_to_pwm(100.0, &policy), 255);
     }
 
     #[test]

@@ -61,7 +61,7 @@ pub enum AutoTuneResultView {
 
 /// A partial patch payload for updating a fan's control profile in the draft config.
 ///
-/// All fields are optional to allow partial updates. Inner `Option<Option<...>>` fields
+/// All fields are optional to allow partial updates. Inner `Option<...>` fields
 /// distinguish between "not provided" and "explicitly set to null".
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DraftFanControlProfilePayload {
@@ -81,6 +81,8 @@ pub struct DraftFanControlProfilePayload {
     pub actuator_policy: Option<Option<ActuatorPolicy>>,
     #[serde(default)]
     pub pid_limits: Option<Option<PidLimits>>,
+    #[serde(default)]
+    pub alarm_temp_millidegrees: Option<Option<i64>>,
 }
 
 /// Tuning knobs for the control daemon that can be adjusted at runtime.

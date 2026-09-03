@@ -24,6 +24,9 @@ pub fn run_control_set(
     control_ms: u64,
     write_ms: u64,
     deadband_mc: Option<i64>,
+    alarm_temp: Option<f64>,
+    min_output: Option<f64>,
+    max_output: Option<f64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let payload = build_control_profile_payload(
         target_temp,
@@ -35,6 +38,9 @@ pub fn run_control_set(
         control_ms,
         write_ms,
         deadband_mc,
+        alarm_temp,
+        min_output,
+        max_output,
     );
     let payload_json = serde_json::to_string(&payload)?;
     run_async(async {
@@ -63,6 +69,18 @@ pub fn run_control_set(
             .map(|value| format!(", deadband={} millidegrees", value))
             .unwrap_or_default(),
     );
+    if let Some(alarm) = alarm_temp {
+        println!(
+            "  Alarm setpoint: {:.1} C ({} millidegrees).",
+            alarm,
+            celsius_to_millidegrees(alarm),
+        );
+    }
+    if min_output.is_some() || max_output.is_some() {
+        let lo = min_output.map(|v| format!("{v:.1}%")).unwrap_or_default();
+        let hi = max_output.map(|v| format!("{v:.1}%")).unwrap_or_default();
+        println!("  Output range: {lo}..{hi}.");
+    }
     println!("  This change is STAGED only — run 'apply' to make it live.");
     Ok(())
 }
@@ -118,6 +136,9 @@ fn build_control_profile_payload(
     control_ms: u64,
     write_ms: u64,
     deadband_mc: Option<i64>,
+    alarm_temp: Option<f64>,
+    min_output: Option<f64>,
+    max_output: Option<f64>,
 ) -> Value {
     let mut payload = json!({
         "target_temp_millidegrees": celsius_to_millidegrees(target_temp_celsius),
@@ -136,6 +157,22 @@ fn build_control_profile_payload(
 
     if let Some(deadband_millidegrees) = deadband_mc {
         payload["deadband_millidegrees"] = Value::from(deadband_millidegrees);
+    }
+
+    if let Some(alarm_temp_celsius) = alarm_temp {
+        payload["alarm_temp_millidegrees"] =
+            Value::from(celsius_to_millidegrees(alarm_temp_celsius));
+    }
+
+    if min_output.is_some() || max_output.is_some() {
+        let mut policy = serde_json::Map::new();
+        if let Some(lo) = min_output {
+            policy.insert("output_min_percent".to_string(), Value::from(lo));
+        }
+        if let Some(hi) = max_output {
+            policy.insert("output_max_percent".to_string(), Value::from(hi));
+        }
+        payload["actuator_policy"] = Value::Object(policy);
     }
 
     payload
@@ -233,6 +270,9 @@ mod tests {
             2000,
             2500,
             Some(1200),
+            Some(80.0),
+            None,
+            None,
         );
 
         assert_eq!(payload["target_temp_millidegrees"], Value::from(57_500));
@@ -240,6 +280,7 @@ mod tests {
         assert_eq!(payload["pid_gains"]["kp"], Value::from(1.2));
         assert_eq!(payload["cadence"]["write_interval_ms"], Value::from(2500));
         assert_eq!(payload["deadband_millidegrees"], Value::from(1200));
+        assert_eq!(payload["alarm_temp_millidegrees"], Value::from(80_000));
     }
 
     #[test]

@@ -51,6 +51,7 @@ control_mode = "pwm"
 temp_sources = ["hwmon-nct6798-XXXXXXXXXXXXXXXX-temp1"]
 target_temp_millidegrees = 65000
 aggregation = "average"
+alarm_temp_millidegrees = 70000
 
 [draft.fans.hwmon-nct6798-XXXXXXXXXXXXXXXX-fan1.pid_gains]
 kp = 1.0
@@ -65,8 +66,6 @@ write_interval_ms = 250
 [draft.fans.hwmon-nct6798-XXXXXXXXXXXXXXXX-fan1.actuator_policy]
 output_min_percent = 0.0
 output_max_percent = 100.0
-pwm_min = 0
-pwm_max = 255
 startup_kick_percent = 35.0
 startup_kick_ms = 1500
 
@@ -85,6 +84,7 @@ temp_sources = ["hwmon-nct6798-XXXXXXXXXXXXXXXX-temp1"]
 target_temp_millidegrees = 65000
 aggregation = "average"
 deadband_millidegrees = 1000
+alarm_temp_millidegrees = 70000
 
 [applied.fans.hwmon-nct6798-XXXXXXXXXXXXXXXX-fan1.pid_gains]
 kp = 1.0
@@ -99,8 +99,6 @@ write_interval_ms = 250
 [applied.fans.hwmon-nct6798-XXXXXXXXXXXXXXXX-fan1.actuator_policy]
 output_min_percent = 0.0
 output_max_percent = 100.0
-pwm_min = 0
-pwm_max = 255
 startup_kick_percent = 35.0
 startup_kick_ms = 1500
 
@@ -164,7 +162,8 @@ A fan's staged configuration. Fields marked **optional** can be omitted from TOM
 | `pid_gains` | Option\<[PidGains](#pidgains)\> | defaults | Proportional/integral/derivative gains for the PID controller. |
 | `cadence` | Option\<[ControlCadence](#controlcadence)\> | 250/250/250 | Sample, control, and write intervals in milliseconds. |
 | `deadband_millidegrees` | Option\<i64\> | `1000` | Temperature deadband in millidegrees. The controller holds its previous output when the error is within this range. `1000` = 1 °C. |
-| `actuator_policy` | Option\<[ActuatorPolicy](#actuatorpolicy)\> | defaults | PWM range, output clamping, and startup kick settings. |
+| `alarm_temp_millidegrees` | Option\<i64\> | target + 5000 | Alarm setpoint in millidegrees Celsius. The alarm fires when the aggregated temperature reaches this threshold; it clears at threshold − 500 m°C (0.5 °C hysteresis). Defaults to `target_temp_millidegrees + 5000` (5 °C above target). Range: 1–150000. Set to `null` or omit to restore the default. |
+| `actuator_policy` | Option\<[ActuatorPolicy](#actuatorpolicy)\> | defaults | Output clamping and startup kick settings. |
 | `pid_limits` | Option\<[PidLimits](#pidlimits)\> | defaults | Integral and derivative anti-windup clamp limits. |
 
 ### AppliedConfig
@@ -187,7 +186,8 @@ A fan that is actively managed by the daemon. All subtable fields use `serde(def
 | `pid_gains` | [PidGains](#pidgains) | defaults | PID controller gains. |
 | `cadence` | [ControlCadence](#controlcadence) | 250/250/250 | Control loop timing. |
 | `deadband_millidegrees` | i64 | `1000` | Temperature deadband. `1000` = 1 °C. |
-| `actuator_policy` | [ActuatorPolicy](#actuatorpolicy) | defaults | PWM range and startup kick. |
+| `alarm_temp_millidegrees` | i64 | target + 5000 | Alarm setpoint in millidegrees Celsius. Fires when aggregated temperature ≥ this value; clears at threshold − 500 m°C. Defaults to `target_temp_millidegrees + 5000`. Range: 1–150000. |
+| `actuator_policy` | [ActuatorPolicy](#actuatorpolicy) | defaults | Output clamping and startup kick. |
 | `pid_limits` | [PidLimits](#pidlimits) | defaults | Integral and derivative clamps. |
 
 ### PidGains
@@ -225,20 +225,18 @@ The ordering constraint is: `sample ≤ control ≤ write`. All intervals use `M
 |-------|------|---------|-------------|
 | `output_min_percent` | f64 | `0.0` | Minimum logical output the controller can produce (0–100%). Useful to prevent a fan from stalling at very low duty cycles. |
 | `output_max_percent` | f64 | `100.0` | Maximum logical output (0–100%). Useful to cap a noisy fan. |
-| `pwm_min` | u16 | `0` | Minimum PWM value written to sysfs (0–255). Maps to `output_min_percent`. |
-| `pwm_max` | u16 | `255` | Maximum PWM value written to sysfs (0–255). Maps to `output_max_percent`. |
 | `startup_kick_percent` | f64 | `35.0` | Output percentage used for the startup kick pulse (0–100%). |
 | `startup_kick_ms` | u64 | `1500` | Duration of the startup kick in milliseconds. |
 
 The daemon maps logical output to PWM values linearly:
 
 ```
-pwm_value = pwm_min + (output% / 100) × (pwm_max - pwm_min)
+pwm_value = (clamped_output_percent / 100.0) × 255
 ```
 
 **Startup kick** — when the controller transitions from 0% to >0%, it writes `startup_kick_percent` for `startup_kick_ms` before switching to the calculated PID output. This prevents fan stall on low-PWM startup, where some fans need a brief pulse above their minimum stable speed.
 
-Constraints: all percentages must be in `[0.0, 100.0]`, `output_min_percent ≤ output_max_percent`, and `pwm_min ≤ pwm_max`.
+Constraints: all percentages must be in `[0.0, 100.0]`, `output_min_percent ≤ output_max_percent`.
 
 ### PidLimits
 
@@ -308,7 +306,7 @@ Key invariants:
 
 ## Backward compatibility
 
-All fields introduced after Phase 1 (`pid_gains`, `cadence`, `deadband_millidegrees`, `actuator_policy`, `pid_limits`) have `serde(default)` attributes. A config file written by an earlier version of the daemon will load cleanly using safe defaults when read by a newer version.
+All fields introduced after Phase 1 (`pid_gains`, `cadence`, `deadband_millidegrees`, `actuator_policy`, `pid_limits`, `alarm_temp_millidegrees`) have `serde(default)` attributes. A config file written by an earlier version of the daemon will load cleanly using safe defaults when read by a newer version.
 
 For example, this Phase 2 config loads successfully in the current daemon:
 
@@ -325,7 +323,7 @@ control_mode = "pwm"
 temp_sources = ["hwmon-nct6798-XXXXXXXXXXXXXXXX-temp1"]
 ```
 
-The daemon fills in: `target_temp_millidegrees = 65000`, `aggregation = "average"`, `deadband_millidegrees = 1000`, and defaults for `pid_gains`, `cadence`, `actuator_policy`, and `pid_limits`.
+The daemon fills in: `target_temp_millidegrees = 65000`, `aggregation = "average"`, `deadband_millidegrees = 1000`, `alarm_temp_millidegrees = 70000` (target + 5 °C), and defaults for `pid_gains`, `cadence`, `actuator_policy`, and `pid_limits`.
 
 ---
 
@@ -367,8 +365,9 @@ The daemon enforces these rules during `validate` and `apply`:
 | `temp_sources` is non-empty for managed fans | `NoSensorForManagedFan` |
 | All `temp_sources` IDs exist in current inventory | `TempSourceNotFound` |
 | Cadence intervals ≥ 250 ms, and `sample ≤ control ≤ write` | `InvalidCadence` |
-| Actuator percentages in `[0.0, 100.0]`, `output_min ≤ output_max`, `pwm_min ≤ pwm_max` | `InvalidActuatorPolicy` |
+| Actuator percentages in `[0.0, 100.0]`, `output_min ≤ output_max` | `InvalidActuatorPolicy` |
 | `integral_min ≤ integral_max`, `derivative_min ≤ derivative_max` | `InvalidPidLimits` |
+| `alarm_temp_millidegrees` in `[1, 150000]` when set | `InvalidAlarmTemp` |
 
 ---
 
@@ -396,6 +395,7 @@ temp_sources = ["hwmon-nct6798-XXXXXXXXXXXXXXXX-temp1"]
 target_temp_millidegrees = 65000
 aggregation = "average"
 deadband_millidegrees = 1000
+alarm_temp_millidegrees = 70000
 ```
 
 All subtables (`pid_gains`, `cadence`, `actuator_policy`, `pid_limits`) are omitted — the daemon uses defaults.
@@ -442,6 +442,7 @@ temp_sources = [
 target_temp_millidegrees = 70000
 aggregation = "max"
 deadband_millidegrees = 2000
+alarm_temp_millidegrees = 75000
 
 [applied.fans.hwmon-nct6798-XXXXXXXXXXXXXXXX-fan2.pid_gains]
 kp = 0.8
@@ -469,8 +470,6 @@ target_temp_millidegrees = 60000
 [draft.fans.hwmon-ite8613-XXXXXXXXXXXXXXXX-fan3.actuator_policy]
 output_min_percent = 20.0
 output_max_percent = 90.0
-pwm_min = 30
-pwm_max = 230
 
 [applied]
 applied_at = "2026-04-11T16:00:00Z"
@@ -481,18 +480,16 @@ temp_sources = ["hwmon-ite8613-XXXXXXXXXXXXXXXX-temp2"]
 target_temp_millidegrees = 60000
 aggregation = "average"
 deadband_millidegrees = 1500
+alarm_temp_millidegrees = 65000
 
 [applied.fans.hwmon-ite8613-XXXXXXXXXXXXXXXX-fan3.actuator_policy]
 output_min_percent = 20.0
 output_max_percent = 90.0
-pwm_min = 30
-pwm_max = 230
 startup_kick_percent = 35.0
 startup_kick_ms = 1500
 ```
 
 - `output_min_percent = 20.0` prevents the fan from dropping below 20%, avoiding stall on voltage-controlled fans that may not start at very low levels.
-- `pwm_min = 30` / `pwm_max = 230` narrows the sysfs write range to stay within the controller's safe operating band.
 - If you request `"voltage"` for a fan that only supports `"pwm"`, validation will reject the entry with `UnsupportedControlMode`.
 
 ### Custom cadence with slower write interval

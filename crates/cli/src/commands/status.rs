@@ -248,6 +248,16 @@ fn render_runtime_detail_lines(status: &Value) -> Vec<String> {
             "      high-temp alert: {}",
             if high_temp { "yes" } else { "no" }
         ));
+        let alarm_temp = control
+            .get("alarm_temp_millidegrees")
+            .and_then(Value::as_i64);
+        if let Some(alarm_mc) = alarm_temp {
+            lines.push(format!(
+                "      alarm setpoint: {:.1} °C ({} millidegrees)",
+                alarm_mc as f64 / 1000.0,
+                alarm_mc
+            ));
+        }
     }
 
     if let Some(profile) = status.get("control_profile") {
@@ -459,6 +469,7 @@ mod tests {
                 "mapped_pwm": 108,
                 "auto_tuning": false,
                 "alert_high_temp": false,
+                "alarm_temp_millidegrees": 65000,
                 "last_error_millidegrees": -4750
             }
         });

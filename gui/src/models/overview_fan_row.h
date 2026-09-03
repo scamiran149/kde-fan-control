@@ -43,6 +43,7 @@ class OverviewFanRow : public QObject
     Q_PROPERTY(QString outputText READ outputText WRITE setOutputText NOTIFY outputTextChanged)
     Q_PROPERTY(double outputFillRatio READ outputFillRatio WRITE setOutputFillRatio NOTIFY outputFillRatioChanged)
     Q_PROPERTY(bool highTempAlert READ highTempAlert WRITE setHighTempAlert NOTIFY highTempAlertChanged)
+    Q_PROPERTY(qint64 alarmTempMillidegrees READ alarmTempMillidegrees WRITE setAlarmTempMillidegrees NOTIFY alarmTempMillidegreesChanged)
     Q_PROPERTY(bool showRpm READ showRpm WRITE setShowRpm NOTIFY showRpmChanged)
     Q_PROPERTY(bool showOutput READ showOutput WRITE setShowOutput NOTIFY showOutputChanged)
     Q_PROPERTY(QString visualState READ visualState WRITE setVisualState NOTIFY visualStateChanged)
@@ -72,6 +73,7 @@ public:
     QString outputText() const { return m_outputText; }
     double outputFillRatio() const { return m_outputFillRatio; }
     bool highTempAlert() const { return m_highTempAlert; }
+    qint64 alarmTempMillidegrees() const { return m_alarmTempMillidegrees; }
     bool showRpm() const { return m_showRpm; }
     bool showOutput() const { return m_showOutput; }
     QString visualState() const { return m_visualState; }
@@ -98,6 +100,7 @@ public:
     void setOutputText(const QString &v) { if (m_outputText != v) { m_outputText = v; Q_EMIT outputTextChanged(); } }
     void setOutputFillRatio(double v) { if (!qFuzzyCompare(m_outputFillRatio, v)) { m_outputFillRatio = v; Q_EMIT outputFillRatioChanged(); } }
     void setHighTempAlert(bool v) { if (m_highTempAlert != v) { m_highTempAlert = v; Q_EMIT highTempAlertChanged(); } }
+    void setAlarmTempMillidegrees(qint64 v) { if (m_alarmTempMillidegrees != v) { m_alarmTempMillidegrees = v; Q_EMIT alarmTempMillidegreesChanged(); } }
     void setShowRpm(bool v) { if (m_showRpm != v) { m_showRpm = v; Q_EMIT showRpmChanged(); } }
     void setShowOutput(bool v) { if (m_showOutput != v) { m_showOutput = v; Q_EMIT showOutputChanged(); } }
     void setVisualState(const QString &v) { if (m_visualState != v) { m_visualState = v; Q_EMIT visualStateChanged(); } }
@@ -124,6 +127,7 @@ signals:
     void outputTextChanged();
     void outputFillRatioChanged();
     void highTempAlertChanged();
+    void alarmTempMillidegreesChanged();
     void showRpmChanged();
     void showOutputChanged();
     void visualStateChanged();
@@ -151,6 +155,7 @@ private:
     QString m_outputText;
     double m_outputFillRatio = 0.0;
     bool m_highTempAlert = false;
+    qint64 m_alarmTempMillidegrees = 0;
     bool m_showRpm = false;
     bool m_showOutput = false;
     QString m_visualState;

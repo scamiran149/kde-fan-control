@@ -67,7 +67,9 @@ void DraftModel::loadFan(const QString &fanId)
     m_deadbandMillidegrees = 1000;
     m_outputMinPercent = 0.0;
     m_outputMaxPercent = 100.0;
+    m_alarmTempMillidegrees = 0;
     Q_EMIT advancedControlsChanged();
+    Q_EMIT alarmTempCelsiusChanged();
 
     setFanId(fanId);
     clearValidationState();
@@ -336,6 +338,25 @@ void DraftModel::setOutputRange(double minPercent, double maxPercent)
     m_daemon->setDraftFanControlProfile(m_fanId, QJsonDocument(profileObj).toJson(QJsonDocument::Compact));
 }
 
+void DraftModel::setAlarmTempCelsius(double celsius)
+{
+    qint64 millideg = static_cast<qint64>(celsius * 1000.0 + 0.5);
+    if (m_alarmTempMillidegrees != millideg) {
+        m_alarmTempMillidegrees = millideg;
+        Q_EMIT alarmTempCelsiusChanged();
+    }
+}
+
+void DraftModel::setAlarmTempCelsiusViaDBus(double celsius)
+{
+    if (kfcDebug()) qInfo().noquote() << "KFC_GUI_DEBUG draftModel::setAlarmTempCelsiusViaDBus" << celsius;
+    setAlarmTempCelsius(celsius);
+
+    QJsonObject profileObj = buildProfileJson();
+    profileObj[QStringLiteral("alarm_temp_millidegrees")] = m_alarmTempMillidegrees;
+    m_daemon->setDraftFanControlProfile(m_fanId, QJsonDocument(profileObj).toJson(QJsonDocument::Compact));
+}
+
 // --- Private helpers ---
 
 void DraftModel::clearValidationState()
@@ -504,6 +525,14 @@ void DraftModel::parseFanEntry(const QJsonObject &fanObj)
     if (m_deadbandMillidegrees != static_cast<int>(deadband)) { m_deadbandMillidegrees = static_cast<int>(deadband); advancedChanged = true; }
     if (!qFuzzyCompare(m_outputMinPercent, outMin)) { m_outputMinPercent = outMin; advancedChanged = true; }
     if (!qFuzzyCompare(m_outputMaxPercent, outMax)) { m_outputMaxPercent = outMax; advancedChanged = true; }
+
+    // Parse alarm setpoint
+    qint64 alarmTemp = fanObj.value(QStringLiteral("alarm_temp_millidegrees")).toVariant().toLongLong();
+    if (m_alarmTempMillidegrees != alarmTemp) {
+        m_alarmTempMillidegrees = alarmTemp;
+        Q_EMIT alarmTempCelsiusChanged();
+    }
+
     if (advancedChanged) {
         Q_EMIT advancedControlsChanged();
     }

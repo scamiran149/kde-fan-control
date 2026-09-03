@@ -135,6 +135,12 @@ enum ControlCommand {
         write_ms: u64,
         #[arg(long)]
         deadband_mc: Option<i64>,
+        #[arg(long)]
+        alarm_temp: Option<f64>,
+        #[arg(long)]
+        min_output: Option<f64>,
+        #[arg(long)]
+        max_output: Option<f64>,
     },
 }
 
@@ -266,6 +272,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 control_ms,
                 write_ms,
                 deadband_mc,
+                alarm_temp,
+                min_output,
+                max_output,
             } => control::run_control_set(
                 &fan_id,
                 target_temp,
@@ -277,6 +286,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 control_ms,
                 write_ms,
                 deadband_mc,
+                alarm_temp,
+                min_output,
+                max_output,
             )?,
         },
         Command::AutoTune { command } => match command {

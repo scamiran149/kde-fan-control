@@ -99,6 +99,7 @@ impl LifecycleIface {
             deadband_millidegrees: None,
             actuator_policy: None,
             pid_limits: None,
+            alarm_temp_millidegrees: None,
         };
 
         {

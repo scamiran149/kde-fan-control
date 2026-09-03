@@ -200,13 +200,6 @@ fn validate_actuator_policy(fan_id: &str, policy: ActuatorPolicy) -> Result<(), 
         });
     }
 
-    if policy.pwm_min > policy.pwm_max {
-        return Err(ValidationError::InvalidActuatorPolicy {
-            fan_id: fan_id.to_string(),
-            reason: "pwm_min must be <= pwm_max".to_string(),
-        });
-    }
-
     Ok(())
 }
 
@@ -443,6 +436,7 @@ pub fn apply_draft(
                     deadband_millidegrees: entry.resolved_deadband_millidegrees(),
                     actuator_policy: entry.resolved_actuator_policy(),
                     pid_limits: entry.resolved_pid_limits(),
+                    alarm_temp_millidegrees: entry.resolved_alarm_temp_millidegrees(),
                 },
             ))
         })
@@ -466,16 +460,12 @@ pub fn apply_draft(
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{
-        AppliedConfig, AppliedFanEntry, DraftConfig, DraftFanEntry,
-    };
-    use crate::control::{
-        ActuatorPolicy, AggregationFn, ControlCadence, PidGains, PidLimits,
-    };
+    use super::apply_draft;
+    use crate::config::{AppliedConfig, AppliedFanEntry, DraftConfig, DraftFanEntry};
+    use crate::control::{ActuatorPolicy, AggregationFn, ControlCadence, PidGains, PidLimits};
     use crate::inventory::{
         ControlMode, FanChannel, HwmonDevice, InventorySnapshot, SupportState, TemperatureSensor,
     };
-    use super::apply_draft;
 
     fn test_applied_entry() -> AppliedFanEntry {
         AppliedFanEntry {
@@ -497,12 +487,11 @@ mod tests {
             actuator_policy: ActuatorPolicy {
                 output_min_percent: 0.0,
                 output_max_percent: 100.0,
-                pwm_min: 0,
-                pwm_max: 255,
                 startup_kick_percent: 35.0,
                 startup_kick_ms: 1000,
             },
             pid_limits: PidLimits::default(),
+            alarm_temp_millidegrees: 55_000,
         }
     }
 
@@ -571,6 +560,7 @@ mod tests {
             deadband_millidegrees: None,
             actuator_policy: None,
             pid_limits: None,
+            alarm_temp_millidegrees: None,
         }
     }
 
@@ -586,9 +576,18 @@ mod tests {
 
         let previous = AppliedConfig {
             fans: [
-                ("hwmon-test-0000000000000001-fan1".to_string(), test_applied_entry()),
-                ("hwmon-test-0000000000000001-fan2".to_string(), test_applied_entry()),
-                ("hwmon-test-0000000000000001-fan3".to_string(), test_applied_entry()),
+                (
+                    "hwmon-test-0000000000000001-fan1".to_string(),
+                    test_applied_entry(),
+                ),
+                (
+                    "hwmon-test-0000000000000001-fan2".to_string(),
+                    test_applied_entry(),
+                ),
+                (
+                    "hwmon-test-0000000000000001-fan3".to_string(),
+                    test_applied_entry(),
+                ),
             ]
             .into(),
             applied_at: Some("2026-04-10T12:00:00Z".to_string()),
@@ -608,15 +607,21 @@ mod tests {
             "applied config should contain all 3 fans (1 from draft + 2 preserved)"
         );
         assert!(
-            applied.fans.contains_key("hwmon-test-0000000000000001-fan1"),
+            applied
+                .fans
+                .contains_key("hwmon-test-0000000000000001-fan1"),
             "fan1 from draft should be in applied"
         );
         assert!(
-            applied.fans.contains_key("hwmon-test-0000000000000001-fan2"),
+            applied
+                .fans
+                .contains_key("hwmon-test-0000000000000001-fan2"),
             "fan2 preserved from previous should be in applied"
         );
         assert!(
-            applied.fans.contains_key("hwmon-test-0000000000000001-fan3"),
+            applied
+                .fans
+                .contains_key("hwmon-test-0000000000000001-fan3"),
             "fan3 preserved from previous should be in applied"
         );
 
@@ -651,8 +656,14 @@ mod tests {
 
         let previous = AppliedConfig {
             fans: [
-                ("hwmon-test-0000000000000001-fan2".to_string(), test_applied_entry()),
-                ("hwmon-test-0000000000000001-fan3".to_string(), test_applied_entry()),
+                (
+                    "hwmon-test-0000000000000001-fan2".to_string(),
+                    test_applied_entry(),
+                ),
+                (
+                    "hwmon-test-0000000000000001-fan3".to_string(),
+                    test_applied_entry(),
+                ),
             ]
             .into(),
             applied_at: Some("2026-04-10T12:00:00Z".to_string()),
@@ -696,8 +707,14 @@ mod tests {
 
         let previous = AppliedConfig {
             fans: [
-                ("hwmon-test-0000000000000001-fan1".to_string(), test_applied_entry()),
-                ("hwmon-test-0000000000000001-fan2".to_string(), test_applied_entry()),
+                (
+                    "hwmon-test-0000000000000001-fan1".to_string(),
+                    test_applied_entry(),
+                ),
+                (
+                    "hwmon-test-0000000000000001-fan2".to_string(),
+                    test_applied_entry(),
+                ),
             ]
             .into(),
             applied_at: Some("2026-04-10T12:00:00Z".to_string()),
@@ -711,11 +728,15 @@ mod tests {
         );
 
         assert!(
-            applied.fans.contains_key("hwmon-test-0000000000000001-fan1"),
+            applied
+                .fans
+                .contains_key("hwmon-test-0000000000000001-fan1"),
             "managed draft fan should be in applied"
         );
         assert!(
-            !applied.fans.contains_key("hwmon-test-0000000000000001-fan2"),
+            !applied
+                .fans
+                .contains_key("hwmon-test-0000000000000001-fan2"),
             "fan explicitly unmanaged in draft should NOT be preserved"
         );
     }

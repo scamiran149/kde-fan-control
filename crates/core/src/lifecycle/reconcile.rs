@@ -156,6 +156,7 @@ pub fn reconcile_applied_config(
                 deadband_millidegrees: applied_entry.deadband_millidegrees,
                 actuator_policy: applied_entry.actuator_policy,
                 pid_limits: applied_entry.pid_limits,
+                alarm_temp_millidegrees: applied_entry.alarm_temp_millidegrees,
             },
         );
         restored.push(outcome);
@@ -415,6 +416,7 @@ mod tests {
             deadband_millidegrees: 1_000,
             actuator_policy: ActuatorPolicy::default(),
             pid_limits: PidLimits::default(),
+            alarm_temp_millidegrees: 70_000,
         }
     }
 

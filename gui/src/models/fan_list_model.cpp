@@ -372,6 +372,7 @@ void FanListModel::applyFanData(FanStateInfo *info,
             info->setOutputPercent(ctrl.value(QStringLiteral("logical_output_percent")).toDouble(0.0));
             bool highTemp = ctrl.value(QStringLiteral("alert_high_temp")).toBool(false);
             info->setHighTempAlert(highTemp);
+            info->setAlarmTempMillidegrees(ctrl.value(QStringLiteral("alarm_temp_millidegrees")).toVariant().toLongLong());
         } else if (status == QStringLiteral("degraded")) {
             info->setState(QStringLiteral("degraded"));
         } else if (status == QStringLiteral("fallback")) {
